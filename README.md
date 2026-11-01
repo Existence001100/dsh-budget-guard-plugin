@@ -1,22 +1,84 @@
-[English](README.en.md) | [简体中文](README.md)
+<div align="center">
 
-# 预算护栏 · dsh-budget-guard-plugin
+<a id="dsh-budget-guard-plugin"></a>
+
+# 🏦 dsh-budget-guard-plugin
+
+**给 DSH 的每一次任务加一条预算线：支持实时核算、自动拦截与预估降级。**
+
+<a href="./README.en.md">English</a> · <strong>简体中文</strong>
+
+[![npm 版本](https://img.shields.io/npm/v/dsh-budget-guard-plugin?logo=npm&style=flat-square)](https://www.npmjs.com/package/dsh-budget-guard-plugin)
+[![许可证](https://img.shields.io/badge/license-MIT-16a34a.svg?style=flat-square)](./LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-ESM-339933.svg?logo=nodedotjs&logoColor=white&style=flat-square)](https://nodejs.org/)
+
+</div>
 
 给 DSH（DeepSeek Harness）的每一次任务加一条预算线：按 **人民币金额** 或 **Token 数量** 限制消耗，接近上限时预警，达到阈值时自动中止（`auto`）或询问你“继续 / 中止”（`manual`），并在**每轮结束后**估算还需多少步、还要花多少钱。
 
+**🚀 快速安装**
+
+```sh
+dsh plugin add dsh-budget-guard-plugin
+```
+
+安装后请重启 DSH。详见[配置说明](#配置项)。
+
+[🚀 安装](#安装) · [✨ 核心能力](#它能做什么) · [⚙️ 配置](#配置项) · [🐛 反馈](https://github.com/Existence001100/dsh-budget-guard/issues)
+
+## 目录
+
+- [它能做什么](#它能做什么)
+- [拦截流程](#拦截流程)
+- [安装](#安装)
+- [设置预算](#设置预算)
+- [配置项](#配置项)
+- [高峰 / 空闲计价](#高峰--空闲计价)
+- [怎么核对金额（和官网账单对不上时）](#怎么核对金额和官网账单对不上时)
+- [冷启动与快照](#冷启动与快照)
+- [未知模型 / 价格未知](#未知模型--价格未知)
+- [父任务 / 子代理聚合](#父任务--子代理聚合)
+- [重试 / 时段归属](#重试--时段归属)
+- [手动模式：临时放行 vs 关闭提示](#手动模式临时放行-vs-关闭提示)
+- [HTTP 路由](#http-路由)
+- [只读字段](#只读字段)
+- [每轮预估怎么算（不花额外 Token）](#每轮预估怎么算不花额外-token)
+- [界面](#界面)
+- [拦截行为细节](#拦截行为细节)
+- [零依赖与 Config 投影](#零依赖与-config-投影)
+- [构建与测试](#构建与测试)
+- [已知边界](#已知边界)
+- [License](#license)
+
 ## 它能做什么
 
-| 能力 | 实现方式 |
-| --- | --- |
-| 预算声明 | 插件 Config（全局默认）或对话里的 `/budget` 命令（仅当前会话） |
-| 实时核算 | 从会话日志的 `assistant/message.usage` 累计 input/output/cache Token；每条消息按它**实际发生时刻**的北京高峰/空闲价计费 |
-| 自动拦截 | `agent/turn-stopping` 达到 `interceptRatio` 时调用 `agent.cancel({ kind: 'hook' })`；`agent/pre-step` 在超预算时拒绝下一步，避免继续产生模型调用 |
-| 手动拦截 | `manual` 模式只提示，不自动取消；composer 下方的预算条出现「继续 / 中止」按钮 |
-| 预警 | 达到 `warnRatio`（默认 80%）在预算条与每轮卡片上显示醒目提示 |
-| 任务前粗估 | 首轮开始前给出 3–12 步、金额/Token 范围与预算占比（可关） |
-| 每轮预估 | 只展示**近期历史燃烧率**（最近 3 轮/步的平均消耗）；只有模型明确写出计划时才显示剩余步数与剩余金额，**不预测未来总花费**；不新增 LLM 调用 |
-| 输出位置 | `estimateOutput`: `chat`（每轮卡片）、`sidebar`（右侧栏常驻页）、`both`（默认）。右侧栏页由 `dsh-better-sidebar` 提供；没有该 bundle 时自动退回卡片 |
-| 配置校验 | 插件加载时校验枚举、数值范围、未知键；无效值直接报 `ValidationError` |
+| 图标 | 能力 | 实现方式 |
+| --- | --- | --- |
+| 🚦 | 预算声明 | 插件 Config（全局默认）或对话里的 `/budget` 命令（仅当前会话） |
+| 💸 | 实时核算 | 从会话日志的 `assistant/message.usage` 累计 input/output/cache Token；每条消息按它**实际发生时刻**的北京高峰/空闲价计费 |
+| 🛑 | 自动拦截 | `agent/turn-stopping` 达到 `interceptRatio` 时调用 `agent.cancel({ kind: 'hook' })`；`agent/pre-step` 在超预算时拒绝下一步，避免继续产生模型调用 |
+| ✋ | 手动拦截 | `manual` 模式只提示，不自动取消；composer 下方的预算条出现「继续 / 中止」按钮 |
+| ⚠️ | 预警 | 达到 `warnRatio`（默认 80%）在预算条与每轮卡片上显示醒目提示 |
+| 📐 | 任务前粗估 | 首轮开始前给出 3–12 步、金额/Token 范围与预算占比（可关） |
+| 📊 | 降级预估 | 只展示**近期历史燃烧率**（最近 3 轮/步的平均消耗）；只有模型明确写出计划时才显示剩余步数与剩余金额，**不预测未来总花费**；不新增 LLM 调用 |
+| 🧭 | 输出位置 | `estimateOutput`: `chat`（每轮卡片）、`sidebar`（右侧栏常驻页）、`both`（默认）。右侧栏页由 `dsh-better-sidebar` 提供；没有该 bundle 时自动退回卡片 |
+| ✅ | 配置校验 | 插件加载时校验枚举、数值范围、未知键；无效值直接报 `ValidationError` |
+| 🛡️ | 安全护栏 | `/config/save` 与 `/action` 默认只接受本机 loopback 请求；冷启动快照 + 从会话日志重放，保证账目可恢复、不被重复计费 |
+
+## 拦截流程
+
+```mermaid
+flowchart LR
+    U["用户请求"] --> M["agent/pre-step 拦截器"]
+    M -->|预估成本| C["计费引擎"]
+    C -->|匹配价格表| P["高峰/空闲计价"]
+    P -->|累计| E["预算判定"]
+    E -->|未超阈值| A["放行"]
+    E -->|达到阈值| B["拦截/询问"]
+    E -->|超出| X["强制中止"]
+```
+
+每条 `assistant/message` 都按它自己的 `event.time` 逐条计价后累计；判定使用金额与 Token 两条独立预算线，**任一先到即触发**，值为 0 的维度不参与。
 
 ## 安装
 
@@ -432,3 +494,7 @@ node test/bom.test.mjs  # 全仓库 BOM 检查，含 lib/（运行时真正加�
 - 自动打开右侧栏用 `localStorage` 记“每会话一次”（7 天过期）；隐私模式下 storage 不可用时退回内存标记，同一页面内仍只开一次。注意 `localStorage` 按 origin 隔离：`127.0.0.1:56675` 与 `localhost:56675` 会被当成两个站点，同一个会话可能各自动打开一次（`TODO: 需确认` 是否还有其他端口别名）。
 - 非法时间戳只累加 `counters.invalidTimeMessages`（一个数字），不会为每条非法消息保留记录，因此快照不会因此增长。
 - 子代理聚合结果有 500ms 缓存，只在 `assistant/message`（真的产生了费用）与 `agent/created`/`agent/disposed` 时失效。高密度消息下缓存命中率仍然很低——这是正确性优先的取舍，聚合查询本身是内存遍历，不需要更激进的优化。
+
+## License
+
+本项目基于 [MIT License](./LICENSE) 发布。

@@ -1,22 +1,84 @@
-[English](README.en.md) | [简体中文](README.md)
+<div align="center">
 
-# Budget Guard · dsh-budget-guard-plugin
+<a id="dsh-budget-guard-plugin"></a>
+
+# 🏦 dsh-budget-guard-plugin
+
+**Draw a budget line across every task in DSH. Real-time accounting, auto-interception, and downgraded estimates.**
+
+<strong>English</strong> · <a href="./README.md">简体中文</a>
+
+[![npm version](https://img.shields.io/npm/v/dsh-budget-guard-plugin?logo=npm&style=flat-square)](https://www.npmjs.com/package/dsh-budget-guard-plugin)
+[![License](https://img.shields.io/badge/license-MIT-16a34a.svg?style=flat-square)](./LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-ESM-339933.svg?logo=nodedotjs&logoColor=white&style=flat-square)](https://nodejs.org/)
+
+</div>
 
 Draws a budget line across every task in DSH (DeepSeek Harness): cap consumption by **CNY amount** or **token count**, warn as you approach the ceiling, and at the threshold either abort automatically (`auto`) or ask you to "continue / abort" (`manual`). After **every turn** it also estimates how many steps and how much money are left.
 
+**🚀 Quick install**
+
+```sh
+dsh plugin add dsh-budget-guard-plugin
+```
+
+Restart DSH after installation. See [configuration](#configuration).
+
+[🚀 Installation](#installation) · [✨ Capabilities](#what-it-does) · [⚙️ Configuration](#configuration) · [🐛 Feedback](https://github.com/Existence001100/dsh-budget-guard/issues)
+
+## Table of contents
+
+- [What it does](#what-it-does)
+- [Enforcement flow](#enforcement-flow)
+- [Installation](#installation)
+- [Setting a budget](#setting-a-budget)
+- [Configuration](#configuration)
+- [Peak / off-peak pricing](#peak--off-peak-pricing)
+- [How to reconcile amounts (when it doesn't match the official bill)](#how-to-reconcile-amounts-when-it-doesnt-match-the-official-bill)
+- [Cold start and snapshots](#cold-start-and-snapshots)
+- [Unknown models / unknown prices](#unknown-models--unknown-prices)
+- [Parent task / subagent aggregation](#parent-task--subagent-aggregation)
+- [Retries / period attribution](#retries--period-attribution)
+- [Manual mode: temporary grant vs. silencing the prompt](#manual-mode-temporary-grant-vs-silencing-the-prompt)
+- [HTTP routes](#http-routes)
+- [Read-only fields](#read-only-fields)
+- [How the per-turn estimate works (no extra tokens)](#how-the-per-turn-estimate-works-no-extra-tokens)
+- [UI](#ui)
+- [Interception details](#interception-details)
+- [Zero dependencies and Config projection](#zero-dependencies-and-config-projection)
+- [Build and test](#build-and-test)
+- [Known limitations](#known-limitations)
+- [License](#license)
+
 ## What it does
 
-| Capability | How it works |
-| --- | --- |
-| Budget declaration | Plugin Config (global default) or the `/budget` command in a conversation (current session only) |
-| Live accounting | Accumulates input/output/cache tokens from `assistant/message.usage` in the session log; every message is billed at the Beijing peak/off-peak price **in effect at the moment it actually occurred** |
-| Automatic interception | Calls `agent.cancel({ kind: 'hook' })` from `agent/turn-stopping` once `interceptRatio` is reached; `agent/pre-step` rejects the next step when the budget is exceeded, so no further model calls are made |
-| Manual interception | `manual` mode only warns and never cancels; the budget bar under the composer offers "Continue / Abort" buttons |
-| Warning | At `warnRatio` (default 80%) a prominent notice appears on the budget bar and the per-turn card |
-| Pre-task rough estimate | Before the first turn, shows a range of 3–12 steps with a cost/token range and share of budget (can be disabled) |
-| Per-turn estimate | Shows only the **recent burn rate** (average consumption over the last 3 turns/steps). Remaining steps and remaining cost appear only when the model itself states a plan; **future total spend is never predicted**; no extra LLM call is made |
-| Output location | `estimateOutput`: `chat` (per-turn card), `sidebar` (persistent page in the right sidebar), `both` (default). The sidebar page comes from `dsh-better-sidebar`; without that bundle it falls back to the card |
-| Config validation | Enum values, numeric ranges and unknown keys are validated at plugin load; invalid values raise `ValidationError` |
+| Icon | Capability | How it works |
+| --- | --- | --- |
+| 🚦 | Budget declaration | Plugin Config (global default) or the `/budget` command in a conversation (current session only) |
+| 💸 | Live accounting | Accumulates input/output/cache tokens from `assistant/message.usage` in the session log; every message is billed at the Beijing peak/off-peak price **in effect at the moment it actually occurred** |
+| 🛑 | Automatic interception | Calls `agent.cancel({ kind: 'hook' })` from `agent/turn-stopping` once `interceptRatio` is reached; `agent/pre-step` rejects the next step when the budget is exceeded, so no further model calls are made |
+| ✋ | Manual interception | `manual` mode only warns and never cancels; the budget bar under the composer offers "Continue / Abort" buttons |
+| ⚠️ | Warning | At `warnRatio` (default 80%) a prominent notice appears on the budget bar and the per-turn card |
+| 📐 | Pre-task rough estimate | Before the first turn, shows a range of 3–12 steps with a cost/token range and share of budget (can be disabled) |
+| 📊 | Downgraded estimate | Shows only the **recent burn rate** (average consumption over the last 3 turns/steps). Remaining steps and remaining cost appear only when the model itself states a plan; **future total spend is never predicted**; no extra LLM call is made |
+| 🧭 | Output location | `estimateOutput`: `chat` (per-turn card), `sidebar` (persistent page in the right sidebar), `both` (default). The sidebar page comes from `dsh-better-sidebar`; without that bundle it falls back to the card |
+| ✅ | Config validation | Enum values, numeric ranges and unknown keys are validated at plugin load; invalid values raise `ValidationError` |
+| 🛡️ | Guardrails | `/config/save` and `/action` accept loopback requests only by default; cold-start snapshots plus replay from the session log keep the ledger recoverable and never billed twice |
+
+## Enforcement flow
+
+```mermaid
+flowchart LR
+    U["User request"] --> M["agent/pre-step guard"]
+    M -->|estimate cost| C["Billing engine"]
+    C -->|match price table| P["Peak / off-peak pricing"]
+    P -->|accumulate| E["Budget decision"]
+    E -->|below threshold| A["Allow"]
+    E -->|at threshold| B["Intercept / ask"]
+    E -->|over budget| X["Force stop"]
+```
+
+Each `assistant/message` is priced one by one using its own `event.time` and then summed; the decision uses two independent budget lines (amount and tokens), and **whichever is hit first wins** — a dimension set to 0 takes no part.
 
 ## Installation
 
@@ -212,7 +274,7 @@ Common sources of discrepancy:
   - This rule exists specifically to handle eviction: eviction deletes the oldest `settledCharges` records, but the money stays in `cost`. Judging by "does the disk list this key" would make evicted steps look like steps the disk never settled, so another process would add them and **bill twice**.
   - Only keys whose `seq` does not exceed the watermark get a **marker** (`null`: no summary, no money), purely so later retries are rejected rather than re-billed; **keys above the watermark get nothing at all**, leaving settlement to the disk (adding a marker would make the disk reject its own first settlement). Summaries are never transplanted: the disk records its own amounts, and moving them over for rollback would contradict the total.
   - The warning distinguishes the two outcomes: `kept N marker(s) without money` / `dropped N already-known key(s)`. **There are no "topped-up" or "left to disk" counters** — neither situation exists on the merge path (the former was confirmed unreachable in 0.3.3 and the latter in 0.3.4, and both were removed).
-  - **When `lastSeq` is equal**: this process is still the writer (keeping the newest detail replaceable) and only corrects `settledSeqWatermark` upwards to the disk maximum, **never downwards** (going back would make the next merge wrongly think "the disk has never seen many steps"). The log line is `snapshot watermark restore`.
+- **When `lastSeq` is equal**: this process is still the writer (keeping the newest detail replaceable) and only corrects `settledSeqWatermark` upwards to the disk maximum, **never downwards** (going back would make the next merge wrongly think "the disk has never seen many steps"). The log line is `snapshot watermark restore`.
 - `lastSeq` semantics: a **per-session log watermark**, equal to the highest `session/event.seq` folded into that state; merging takes the max, snapshots store it in `session.lastSeq`, and cold start uses it as the replay origin (events with `event.seq <= lastSeq` are skipped).
 - Old instance files are cleaned up by the `<pid>.<startTs>` in the filename: a file with this process's pid but a `startTs` from an earlier start (pid reuse) is deleted outright; files of other pids are kept while the process is alive, otherwise cleaned up according to `snapshotMaxAgeDays`. Only files from `SNAPSHOT_VERSION=2` onwards are read; 0.3.x files are not half-parsed but fully recomputed by replaying the log.
 - On cold start the snapshot is read and the UI first shows `≈¥17.09 (pending correction)`, never presenting 0 as the real value; it is corrected by replay once `agent/created` or a new event arrives, and `stale` returns to `false`.
@@ -434,3 +496,7 @@ Only Node built-in modules are used; no TypeScript, esbuild or network install i
 - Auto-opening the sidebar records "once per session" in `localStorage` (7-day expiry); when storage is unavailable (private mode) it falls back to an in-memory flag, so it still opens only once per page. Note that `localStorage` is isolated by origin: `127.0.0.1:56675` and `localhost:56675` count as two sites, so the same session may auto-open once for each (`TODO: needs confirmation` on whether other port aliases exist).
 - Invalid timestamps only increment `counters.invalidTimeMessages` (a single number) and keep no per-message record, so the snapshot does not grow because of them.
 - Subagent aggregation results are cached for 500ms and invalidated only on `assistant/message` (which really produced cost) and on `agent/created`/`agent/disposed`. Under dense messaging the hit rate stays low — a deliberate correctness-first trade-off; the aggregate query is an in-memory walk and needs no more aggressive optimisation.
+
+## License
+
+Released under the [MIT License](./LICENSE).
