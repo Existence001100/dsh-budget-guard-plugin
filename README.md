@@ -1,32 +1,32 @@
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.en.md) | [简体中文](README.md)
 
-# Budget Guard · dsh-budget-guard-plugin
+# 预算护栏 · dsh-budget-guard-plugin
 
-Draws a budget line across every task in DSH (DeepSeek Harness): cap consumption by **CNY amount** or **token count**, warn as you approach the ceiling, and at the threshold either abort automatically (`auto`) or ask you to "continue / abort" (`manual`). After **every turn** it also estimates how many steps and how much money are left.
+给 DSH（DeepSeek Harness）的每一次任务加一条预算线：按 **人民币金额** 或 **Token 数量** 限制消耗，接近上限时预警，达到阈值时自动中止（`auto`）或询问你“继续 / 中止”（`manual`），并在**每轮结束后**估算还需多少步、还要花多少钱。
 
-## What it does
+## 它能做什么
 
-| Capability | How it works |
+| 能力 | 实现方式 |
 | --- | --- |
-| Budget declaration | Plugin Config (global default) or the `/budget` command in a conversation (current session only) |
-| Live accounting | Accumulates input/output/cache tokens from `assistant/message.usage` in the session log; every message is billed at the Beijing peak/off-peak price **in effect at the moment it actually occurred** |
-| Automatic interception | Calls `agent.cancel({ kind: 'hook' })` from `agent/turn-stopping` once `interceptRatio` is reached; `agent/pre-step` rejects the next step when the budget is exceeded, so no further model calls are made |
-| Manual interception | `manual` mode only warns and never cancels; the budget bar under the composer offers "Continue / Abort" buttons |
-| Warning | At `warnRatio` (default 80%) a prominent notice appears on the budget bar and the per-turn card |
-| Pre-task rough estimate | Before the first turn, shows a range of 3–12 steps with a cost/token range and share of budget (can be disabled) |
-| Per-turn estimate | Shows only the **recent burn rate** (average consumption over the last 3 turns/steps). Remaining steps and remaining cost appear only when the model itself states a plan; **future total spend is never predicted**; no extra LLM call is made |
-| Output location | `estimateOutput`: `chat` (per-turn card), `sidebar` (persistent page in the right sidebar), `both` (default). The sidebar page comes from `dsh-better-sidebar`; without that bundle it falls back to the card |
-| Config validation | Enum values, numeric ranges and unknown keys are validated at plugin load; invalid values raise `ValidationError` |
+| 预算声明 | 插件 Config（全局默认）或对话里的 `/budget` 命令（仅当前会话） |
+| 实时核算 | 从会话日志的 `assistant/message.usage` 累计 input/output/cache Token；每条消息按它**实际发生时刻**的北京高峰/空闲价计费 |
+| 自动拦截 | `agent/turn-stopping` 达到 `interceptRatio` 时调用 `agent.cancel({ kind: 'hook' })`；`agent/pre-step` 在超预算时拒绝下一步，避免继续产生模型调用 |
+| 手动拦截 | `manual` 模式只提示，不自动取消；composer 下方的预算条出现「继续 / 中止」按钮 |
+| 预警 | 达到 `warnRatio`（默认 80%）在预算条与每轮卡片上显示醒目提示 |
+| 任务前粗估 | 首轮开始前给出 3–12 步、金额/Token 范围与预算占比（可关） |
+| 每轮预估 | 只展示**近期历史燃烧率**（最近 3 轮/步的平均消耗）；只有模型明确写出计划时才显示剩余步数与剩余金额，**不预测未来总花费**；不新增 LLM 调用 |
+| 输出位置 | `estimateOutput`: `chat`（每轮卡片）、`sidebar`（右侧栏常驻页）、`both`（默认）。右侧栏页由 `dsh-better-sidebar` 提供；没有该 bundle 时自动退回卡片 |
+| 配置校验 | 插件加载时校验枚举、数值范围、未知键；无效值直接报 `ValidationError` |
 
-## Installation
+## 安装
 
-Install this package through the plugin manager in DSH (an npm install works out of the box; a local-directory install creates a link — if you edited `src/` in a source checkout, rebuild with `node build.mjs` and then disable/enable the plugin on the plugins page, or restart DSH):
+在 DSH 里用插件管理器安装本插件（从 npm 安装直接可用；从本地目录安装会建立链接。若在源码目录里改过 `src/`，请重新 `node build.mjs`，再在插件页禁用/启用本插件，或重启 DSH）：
 
 ```text
 dsh plugin add dsh-budget-guard-plugin
 ```
 
-Alternatively, open **Settings → Plugins → Add** in the DSH Web UI and pick this package. After installation the bundle inserts one `budget-guard` row with this default config:
+或在 DSH Web 的 **设置 → 插件 → 添加** 中搜索并添加 `dsh-budget-guard-plugin`。安装后 bundle 会插入一行 `budget-guard`，默认配置为：
 
 ```yaml
 - insert:
@@ -38,64 +38,64 @@ Alternatively, open **Settings → Plugins → Add** in the DSH Web UI and pick 
         estimateOutput: both
 ```
 
-`package.json` already declares `dsh.bundle.patch`, `exports["./client"]`, `locale/*.json` and `icon`, and its `files` field includes `lib/` and `cordis.patch.yml`, so the published npm package is also recognised by `dsh plugin add`.
+`package.json` 已声明 `dsh.bundle.patch`、`exports["./client"]`、`locale/*.json`、`icon`，`files` 包含 `lib/` 与 `cordis.patch.yml`，因此打成的 npm 包也能被 `dsh plugin add` 识别。
 
-## Setting a budget
+## 设置预算
 
-### Option 1: conversation command (recommended, current session only)
+### 方式一：对话命令（推荐，只影响当前会话）
 
 ```text
-/budget 2.5              # ¥2.50 for this task
-/budget 20000 tokens     # 20k tokens for this task
-/budget 20k              # same as above
-/budget both 2 20000     # both amount and token caps (whichever is hit first wins)
-/budget                  # show current budget, usage, progress and the last per-turn estimate
-/budget continue         # manual mode: continue, raising the budget by ~10% before prompting again
-/budget abort            # manual mode: abort the current turn
-/budget unlock           # lift budget interception for this session (cost is still tracked, but nothing aborts or blocks)
-/budget lock             # restore budget interception for this session
-/budget off              # clear the session override and fall back to the Config default (restores interception too)
-/budget reset-snapshot   # drop this session's cache and snapshot entry and re-bill from the session log (for troubleshooting)
+/budget 2.5              # 本次任务 ¥2.50
+/budget 20000 tokens     # 本次任务 20k tokens
+/budget 20k              # 同上
+/budget both 2 20000     # 金额 + Token 双上限（任一先到即触发）
+/budget                  # 查看当前预算、已用、进度与上一轮预估
+/budget continue         # manual 模式：继续，再增加约 10% 预算后再次提示
+/budget abort            # manual 模式：中止当前轮次
+/budget unlock           # 解除本会话的预算拦截（费用仍统计，但不再中止/拦截）
+/budget lock             # 恢复本会话的预算拦截
+/budget off              # 清除会话覆盖，回到 Config 默认值（同时恢复拦截）
+/budget reset-snapshot   # 丢弃本会话的缓存与快照条目，按会话日志重新计费（排障用）
 ```
 
-**A budget of 0 (unset) never blocks anything.** `budgetAmount` and `tokenBudget` both default to `0`, meaning "this line does not exist": no turn is cancelled, `pre-step` does not reject, and no "continue?" prompt appears. Threshold checks are enabled only when the amount or the token budget is > 0. Being blocked although you never set a budget is a bug, not a design decision — a regression test pins this down (spending hundreds of thousands of tokens must neither cancel nor reject).
+**预算为 0（未设置）时不会拦截。** `budgetAmount` 与 `tokenBudget` 默认都是 `0`，含义是“这条线不存在”：不会取消轮次、不会在 `pre-step` 拒绝、也不会弹“是否继续”。只有金额或 Token 任一 > 0 才启用阈值判定。你没设预算就会被拦，是 bug 而不是设计——有回归测试钉住（花掉几十万 token 也不 cancel / reject）。
 
-`/budget reset-snapshot` exists for the "settlement rejected because the detail could not be rolled back" case:
+`/budget reset-snapshot` 用于“明细无法回滚导致结算被拒绝”的排障：
 
-- **What it clears**: this session's billing cache (`cost`, `stepCharges`, `settledCharges`, settlement watermark, `blockedSettlements`) is rebuilt from scratch.
-- **What it keeps**: manual decisions such as "continue / don't ask again" and the budget declared via `/budget` — those are user choices, not ledger entries.
-- **One-shot operation**: no "replayable effect" is written. On restart, the `command/run` entry in the log is recognised as a side-effect-free argument, so the cache is **not** cleared again on every restart.
-- **Multi-instance boundary**: the reset immediately recomputes from the log and writes a snapshot with an updated timestamp (a tombstone); for a given session the entry with the newest `savedAt` in the directory wins, so another instance's stale cache is never read back. If another instance writes fresh state *after* the reset, that newer state wins (it is its own, further-folded view of the log).
-- **After the reset**: the next read is the genuine recomputed state — no brief `loading` flash and no zero-then-jump; if the log really does record spend, the recomputation matches the log.
+- **清理范围**：本会话的计费缓存（`cost`、`stepCharges`、`settledCharges`、结算水位、`blockedSettlements`）全部重建。
+- **保留**：「继续 / 不再提示」等手动决定与 `/budget` 设的预算声明——它们是用户的选择，不是账目。
+- **一次性操作**：不写「可重放的效果」。日志里那条 `command/run` 在重启重放时只会被识别成一个无副作用的参数，**不会**每次重启都再清一次缓存。
+- **多实例边界**：执行时立即按日志重算并写一份**时间戳更新**的快照（墓碑）；同一会话在目录里“`savedAt` 最新者为准”，所以别的实例那份旧缓存不会被读回来。若另一个实例在 reset **之后**又写入新状态，则以新状态为准（那是它自己折得更远的日志视图）。
+- **reset 之后**：下一次读取就是重算后的真实状态——不会短暂显示 `loading`，也不会先归零再跳回；日志里确实有花费时，重算结果与日志一致。
 
-The command never calls the model; it only writes a `command/run` / `command/done` log entry, and after a restart the plugin replays that budget declaration from `command/run`.
+命令不会调用模型，只写一条 `command/run` / `command/done` 日志；重启后插件会从 `command/run` 重放这条预算声明。
 
-### Option 2: budget bar under the input box (current session only)
+### 方式二：输入框下方预算条（只影响当前会话）
 
-Only one line is shown under the input box: `No budget · ¥0.00 used` (or `Budget ¥2.00 · ¥1.15 used` when a budget exists). Clicking it expands:
+输入框下方只保留一行 `未设置预算 · 已用 ¥0.00`（有预算时是 `预算 ¥2.00 · 已用 ¥1.15`）。点击这行会展开：
 
-- Cost breakdown: input (miss) / cache hit / output, peak and off-peak prices, latest model, current period, tokens, and an unknown-model notice;
-- A "Set budget for this task…" button: expands amount and token inputs; saving writes through the same `/budget` command into the session log, so it is replayable and auditable.
+- 费用明细：输入（未命中）/ 缓存命中 / 输出、峰价与谷价、最近模型、当前时段、Token、未知模型提示；
+- 「设置本次预算…」按钮：展开金额与 Token 输入框，保存后通过同一条 `/budget` 命令写入会话日志，因此可重放、可审计。
 
-### Option 3: Config defaults / settings page
+### 方式三：Config 默认值 / 设置页
 
-Override this row in the profile's `cordis.patch.yml`, or open **Settings → Budget Guard**. The settings page exposes the **commonly used** knobs (21 of them), each with a one-line description:
+在 profile 的 `cordis.patch.yml` 中覆盖本行，或打开 **设置 → 预算护栏**。设置页覆盖**常用**可调项（21 个），每项都带一句说明：
 
-| Group | Adjustable |
+| 分组 | 可调项 |
 | --- | --- |
-| Interception | Intercept mode (auto / manual toggle), warn ratio, intercept threshold, unknown-model warning, cumulative grant ceiling, manual hard-stop multiplier, hard interception before each step |
-| Per-turn estimate | Per-turn estimate toggle, output location (chat card / right sidebar / both), minimum estimate interval, pre-task rough estimate toggle |
-| Default budget | Default amount, default tokens, currency |
-| Snapshot | Cold-start snapshot toggle, sessions kept, days kept for inactive sessions, detail turns kept, per-session settlement record cap (`snapshotPath` is not here; see below) |
-| Access | Local-only settings changes (`requireLocalControl`), local-only actions on the current turn (`requireLocalAction`) |
+| 拦截 | 拦截模式（auto / manual 滑动开关）、预警比例、拦截阈值、未知模型告警、累计放行上限、手动硬停倍数、每步前硬拦截 |
+| 每轮预估 | 每轮预估开关、输出位置（对话卡片 / 右侧栏 / 两者）、预估最小间隔、任务前粗估开关 |
+| 默认预算 | 默认金额、默认 Token、币种 |
+| 快照 | 冷启动快照开关、保留会话数、非活跃保留天数、明细保留轮数、每会话结算记录上限（`snapshotPath` 不在此处，见下） |
+| 访问 | 仅本机可改设置（`requireLocalControl`）、仅本机可操作本轮（`requireLocalAction`） |
 
-**4 keys are not in the form** and can only be edited by hand in `cordis.patch.yml`: `snapshotPath` (free-form path), `allowedOrigins` (array), `holidays` (array of dates) and `useBuiltinHolidays` (toggle tied to `holidays`). Tests assert that "form keys + these 4 == every key in `DEFAULTS`", so forgetting a control when adding a Config key fails the tests immediately.
+**4 个键不在表单里**，只能手改 `cordis.patch.yml`：`snapshotPath`（自由路径）、`allowedOrigins`（数组）、`holidays`（日期数组）、`useBuiltinHolidays`（与 `holidays` 联动的开关）。测试会断言「表单键 + 这 4 个 == `DEFAULTS` 的全部键」，所以新增 Config 键时漏加控件会直接测试失败。
 
-Ratio fields are entered as percentages (`85` means `0.85`). The footer shows the price source, holiday source, cross-origin allowlist size, and whether the right sidebar is available.
+比例项以百分数输入（`85` 即 `0.85`）。底部显示价格来源、节假日来源、跨源白名单数量、右侧栏是否可用。
 
-"Save all settings" posts to `POST /dsh-budget/config/save`: the Host merges the patch into the current Config and revalidates the whole thing with **exactly the same validator the plugin uses at load**, so cross-field rules (`warnRatio ≤ interceptRatio`, grant ceiling must stay below the hard-stop line) are rejected right there with a specific reason; unknown keys are a 400. It writes back the `config` of the current bundle row, which is equivalent to editing `cordis.patch.yml` by hand.
+点「保存全部设置」后走 `POST /dsh-budget/config/save`：Host 把补丁合并进当前 Config，再用**与插件加载完全相同的校验器**校验整体，因此跨字段规则（`warnRatio ≤ interceptRatio`、放行上限必须低于硬停线）会在这里就被拒绝，并返回具体原因；未知键直接 400。写回的是当前 bundle 行的 `config`，与手工编辑 `cordis.patch.yml` 等价。
 
-> Fixed in 0.3.10: the settings page used to divide an already-fractional `warnRatio: 0.8` by 100 (yielding `0.008`), so every "save all settings" was rejected by the Host with `warnRatio must be ... between 0.01 and 1`. It now submits `0.8 / 0.95 / 0.2` unchanged.
+> 0.3.10 修复：设置页曾把已经是比例的 `warnRatio: 0.8` 再除以 100 变成 `0.008`，导致「保存全部设置」每次都被 Host 以 `warnRatio must be ... between 0.01 and 1` 拒绝。现在提交的仍是 `0.8 / 0.95 / 0.2`。
 
 ```yaml
 - id: budget-guard
@@ -114,48 +114,48 @@ Ratio fields are entered as percentages (`85` means `0.85`). The footer shows th
     holidays: []
 ```
 
-> Amount and tokens are two independent budget lines; when both are configured, **either one** reaching its threshold triggers interception. A dimension set to 0 does not take part.
+> 金额与 Token 是两条独立预算线；两条都配置时，**任意一条**达到阈值就触发拦截。未配置（值为 0）的维度不参与拦截。
 
-## Configuration
+## 配置项
 
-| Key | Default | Description |
+| 键 | 默认值 | 说明 |
 | --- | --- | --- |
-| `budgetAmount` | `0` | Default amount budget per session; `0` means no amount cap |
-| `tokenBudget` | `0` | Default token budget per session; `0` means no token cap |
-| `currency` | `CNY` | Only `CNY` / `RMB` are accepted; both mean RMB and are displayed as `¥` (no FX conversion) |
-| `warnRatio` | `0.8` | Warn ratio; must be ≤ `interceptRatio` |
-| `interceptRatio` | `0.95` | Intercept threshold (0.01–1) |
-| `interceptMode` | `auto` | `auto`: cancel automatically; `manual`: warn only and wait for the user to click "Continue / Abort" |
-| `enablePreEstimate` | `true` | Show a rough estimate before the task starts |
-| `enableTurnEstimate` | `true` | Show a consumption estimate after every turn: recent historical average only when no plan is given, never extrapolated into the future |
+| `budgetAmount` | `0` | 每个会话默认金额预算；`0` 表示不设金额上限 |
+| `tokenBudget` | `0` | 每个会话默认 Token 预算；`0` 表示不设 Token 上限 |
+| `currency` | `CNY` | 只支持 `CNY` / `RMB`；两者都是人民币，统一显示 `¥`（不做汇率换算） |
+| `warnRatio` | `0.8` | 预警比例，必须 ≤ `interceptRatio` |
+| `interceptRatio` | `0.95` | 拦截阈值（0.01–1） |
+| `interceptMode` | `auto` | `auto`：自动取消；`manual`：只提示，等用户点「继续 / 中止」 |
+| `enablePreEstimate` | `true` | 任务开始前给出粗估 |
+| `enableTurnEstimate` | `true` | 每轮结束后显示消耗估算：未提供计划时只展示近期历史均值，不做未来外推 |
 | `estimateOutput` | `both` | `chat` / `sidebar` / `both` |
-| `turnEstimateMinInterval` | `1500` | Minimum interval between two estimates (ms), to avoid repeated work on very fast turns |
-| `enforceAtPreStep` | `true` | Also hard-block at `agent/pre-step`, so an over-budget task cannot keep buying model calls |
-| `holidays` | `[]` | Public holidays (`YYYY-MM-DD`). When non-empty it **fully replaces** the built-in table; when empty / entirely invalid and `useBuiltinHolidays=true`, the built-in table is used |
-| `useBuiltinHolidays` | `true` | Whether to fall back to the built-in 2024–2026 holiday table when `holidays` is empty; `false` plus empty means "no holidays"; warns once the built-in table is out of range (2027 onwards) |
-| `allowedOrigins` | `[]` | Development-only cross-origin allowlist; production allows same-origin only, see "HTTP routes" |
-| `enableSnapshot` | `true` | Persist accumulated state into the cold-start snapshot |
-| `snapshotPath` | `''` | Snapshot base path; when empty, `$DSH_HOME/budget-guard/snapshots.json` is used and the real file is `<stem>.<pid>.json` |
-| `snapshotMaxSessions` | `200` | Maximum number of sessions kept per instance snapshot; active sessions are kept first |
-| `snapshotKeepTurns` | `8` | How many recent turns keep their full `stepCharges` detail; retries of older steps are rejected with a warning instead of being added twice |
-| `snapshotMaxAgeDays` | `30` | Maximum age of inactive snapshots; `0` disables age-based cleanup |
-| `unknownWarnRatio` | `0.2` | When the share of unpriced tokens reaches this value, warn that "estimated at the highest price, actual cost may be lower" |
-| `maxGrantedPercent` | `30` | Maximum cumulative grant from manual "Continue"; the default final value is 130%, strictly below the 142.5% hard-stop line |
-| `manualHardStopRatio` | `1.5` | In manual mode (including suppress) force an abort once `interceptRatio × this value` is exceeded |
-| `perSessionMaxSettled` | `2000` | How many settled summaries are kept per session; beyond that, new steps only get a marker, and retries are rejected rather than replaced |
-| `requireLocalControl` | `true` | `/config/save` (changing global budget) accepts loopback requests only; changing budgets from a remote GUI requires turning this off |
-| `requireLocalAction` | `true` | `/action` (continue / abort / set budget for this task) accepts loopback requests only; can be disabled separately to allow remote manual actions |
+| `turnEstimateMinInterval` | `1500` | 两次预估的最小间隔（毫秒），避免连续快轮重复计算 |
+| `enforceAtPreStep` | `true` | 在 `agent/pre-step` 也做硬拦截，防止超预算后继续买模型调用 |
+| `holidays` | `[]` | 法定节假日（`YYYY-MM-DD`）。非空时**完全覆盖**内置表；为空 / 全部非法且 `useBuiltinHolidays=true` 时回退内置表 |
+| `useBuiltinHolidays` | `true` | 为空时是否允许回退内置 2024–2026 节假日表；`false` 时为空表示“无节假日”；2027 起内置表超范围会 warn |
+| `allowedOrigins` | `[]` | 开发用跨源白名单；生产默认只允许同源，见“HTTP 路由” |
+| `enableSnapshot` | `true` | 将累计状态写入冷启动快照 |
+| `snapshotPath` | `''` | 快照基路径；空值时使用 `$DSH_HOME/budget-guard/snapshots.json`，实际写入 `<stem>.<pid>.json` |
+| `snapshotMaxSessions` | `200` | 每个实例快照最多保留的会话数；活跃会话优先保留 |
+| `snapshotKeepTurns` | `8` | 快照保留最近多少轮的全部 `stepCharges` 明细；更早的重试会被拒绝并 warn，不会重复累加 |
+| `snapshotMaxAgeDays` | `30` | 非活跃快照的最长保留天数；`0` 表示不按时间清理 |
+| `unknownWarnRatio` | `0.2` | 未定价 token 占比达到此值时提示“按最高价估算，实际可能偏低” |
+| `maxGrantedPercent` | `30` | manual「继续」最多累计放行比例；默认终值 130%，严格低于 142.5% 硬停线 |
+| `manualHardStopRatio` | `1.5` | manual 模式（含 suppress）超过 `interceptRatio × 该值` 时强制中止 |
+| `perSessionMaxSettled` | `2000` | 每个会话保留多少条已结算摘要；超过后新步骤只记标记，重试会被拒绝而不是替换 |
+| `requireLocalControl` | `true` | `/config/save`（改全局预算）只接受本机（loopback）请求；远程 GUI 改预算需显式关闭 |
+| `requireLocalAction` | `true` | `/action`（继续 / 中止 / 设置本次预算）只接受本机请求；可单独关闭以支持远程 manual 操作 |
 
-Unit prices affect only the **amount** accounting; token budgets always use the real usage. Prices are not hard-coded in Config — see the next section.
+单价只影响“金额”核算；Token 预算始终按真实 usage 计算。价格不在 Config 里硬编码，见下一节。
 
-`GET /dsh-budget/config` also returns 4 **read-only** fields (`output` / `holidaysSource` / `priceSources` / `server`) that cannot be written back through `/config/save`; see the "Read-only fields" subsection under "HTTP routes".
+`GET /dsh-budget/config` 还返回 4 个**只读**字段（`output` / `holidaysSource` / `priceSources` / `server`），它们不能通过 `/config/save` 写回；含义见「HTTP 路由」下的「只读字段」小节。
 
-## Peak / off-peak pricing
+## 高峰 / 空闲计价
 
-- The time zone is fixed to `Asia/Shanghai` (UTC+08:00, no DST); Beijing time is derived from a fixed offset, with no time zone library.
-- **Peak**: Monday to Friday, `09:00–12:00` and `14:00–18:00` (half-open intervals); all other times, Saturdays, Sundays and any date in `holidays` are off-peak all day.
-- The period is decided from **each `assistant/message`'s `event.time`**, not from the clock at render time; a session that crosses peak and off-peak is priced message by message and then summed.
-- Price unit: **CNY per million tokens**, structured as:
+- 时区固定 `Asia/Shanghai`（UTC+08:00，无夏令时），用固定偏移读取北京时间，不依赖时区库。
+- **高峰**：周一至周五 `09:00–12:00`、`14:00–18:00`（左闭右开）；其余时间、周六周日、`holidays` 中的日期全天为空闲。
+- 判定基于**每条 `assistant/message` 的 `event.time`**，不是渲染时的当前时间；同一会话跨峰谷时逐条计价后求和。
+- 单价单位：**元 / 百万 token**，结构：
 
 ```json
 {
@@ -168,62 +168,62 @@ Unit prices affect only the **amount** accounting; token budgets always use the 
 }
 ```
 
-> Corrected in 0.4.0: `output` is back to the official list price of **`8` (peak) and `4` (off-peak, 50%)**; input miss `2 / 1`, cache hit `0.04 / 0.02` (after DeepSeek's official price adjustment). The separate cache-write line item was also removed: cache-write tokens are already part of `input_miss` and are billed at the miss price.
+> 0.4.0 修正：`output` 回到官方标价 **`8`（高峰）、`4`（空闲 50%）**；输入未命中 `2 / 1`、缓存命中 `0.04 / 0.02`（DeepSeek 官方调价后）。同时删除了独立的缓存写入计价项：缓存写入 token 已包含在 `input_miss` 中，按未命中价计费。
 
-- Precedence: built-in defaults → [prices/official-prices.json](prices/official-prices.json) → `prices/local-prices.json`. Copy [prices/local-prices.example.json](prices/local-prices.example.json) to `prices/local-prices.json` to override any field.
-- The `official-prices.json` in this repository contains **conservative sample values** (the plugin never fetches prices from the network); before going live, override them with the official unit prices on your actual bill via `local-prices.json`. After editing a price file, disable and re-enable the plugin once for it to take effect.
-- Missing `offpeak` fields default to `peak × 50%`. A price table only has the three fields `input_miss` / `input_hit` / `output`; cache writes have no separate unit price.
-- Unknown models: their tokens go into `unknownTokens`; **displayed cost counts only what is really known (0 for the unpriced part)**, while interception decisions use `shadowCost`; the budget bar and the breakdown show an unknown-model warning.
-- The built-in holiday table is a conservative list covering 2024–2026; override it through `holidays` according to the official schedule.
-- Missing fields are counted as 0 with a warning; invalid timestamps skip that entry with a warning.
-- DSH's `usage.inputTokens` is already "input not served from cache" and `cacheReadTokens` is an additional field; billing uses `inputTokens × input_miss + cacheRead × input_hit`, so cache hits are never billed twice at the miss price. For OpenAI-style usage that folds cache reads into `inputTokens`, the code detects the `totalTokens` relationship and subtracts `cacheReadTokens` first.
+- 优先级：代码内置默认 → [prices/official-prices.json](prices/official-prices.json) → `prices/local-prices.json`。把 [prices/local-prices.example.json](prices/local-prices.example.json) 复制为 `prices/local-prices.json` 即可覆盖任意字段。
+- 仓库里的 `official-prices.json` 是**保守示例值**（插件不允许联网拉价）；上线前请用 `local-prices.json` 覆盖为你实际账单上的官方单价。修改价格文件后禁用/启用一次插件即可生效。
+- `offpeak` 缺失字段默认取 `peak × 50%`。价格表只有 `input_miss` / `input_hit` / `output` 三个字段；缓存写入没有单独单价。
+- 未知模型：token 计入 `unknownTokens`，**展示费用按真实已知计（未定价部分为 0）**，拦截判定另用 `shadowCost`；预算条与明细显示未知模型警示。
+- 内置节假日表是覆盖 2024–2026 的保守清单；请按官方安排通过 `holidays` 覆盖。
+- 缺字段：按 0 计并记录 warn；非法时间戳：跳过该条并 warn。
+- DSH 的 `usage.inputTokens` 已经是“未命中输入”，`cacheReadTokens` 是额外字段；计价按 `inputTokens × input_miss + cacheRead × input_hit`，不会把缓存命中重复按未命中收费。对把缓存包含在 `inputTokens` 里的 OpenAI 风格 usage，代码会检测 `totalTokens` 关系并先减去 `cacheReadTokens`。
 
-## How to reconcile amounts (when it doesn't match the official bill)
+## 怎么核对金额（和官网账单对不上时）
 
-The plugin never calls a billing API; it only converts usage from `assistant/message` with a local price table. Three steps to reconcile:
+插件不调用计费接口，它只是把 `assistant/message` 里的 usage 按本地价格表换算。核对三步：
 
-1. **Check the convention**: `/budget prices` prints the field mapping and the unit price per 1M tokens; the bottom of the budget breakdown also has a "billing basis (per 1M tokens, peak/off-peak)" line.
-2. **Check individual entries**: `/budget debug 5` prints the key, time, period, each token count, unit price, per-item amount and total for the last 5 settlements, together with the **raw usage JSON** sent by the Host; the unit price comes from `charge.price` recorded at settlement time, so later price-table edits never make the formula disagree with the recorded values.
-3. **Clear the cache and recompute**: if you suspect a stale snapshot accumulation, `/budget reset-snapshot` drops the cache and replays the log.
+1. **看口径**：`/budget prices` 打印字段映射与每 1M token 的单价；预算条明细底部也有一行「计费口径（每 1M token，高峰/空闲价）」。
+2. **看单笔**：`/budget debug 5` 打印最近 5 笔结算的 key、时间、时段、各项 token、单价、单项金额与合计，并附上 Host 传来的**原始 usage JSON**；单价取结算当时记录的 `charge.price`，事后再改价格表也不会让公式和记录值对不上。
+3. **清缓存重算**：怀疑旧快照累加有问题时，`/budget reset-snapshot` 丢弃缓存并按日志重放。
 
-Common sources of discrepancy:
+常见差异来源：
 
-| Source | Explanation |
+| 来源 | 说明 |
 | --- | --- |
-| Cache hit rate | Hit price is usually 1/10 of the miss price; a drop from 90% to 60% cache hits can multiply the amount several times — the most common cause of bill differences |
-| Period detection | Weekdays `09–12`, `14–18` are peak (2×), everything else plus weekends/holidays uses the base price; `/budget debug` marks the decision made at the time |
-| Rounding | Each item is computed linearly, and the total is displayed with 6 decimals; a few tenths of a cent of difference is normal |
-| Unpriced models | Displayed at the real known cost (usually 0), interception uses "the highest unit price in the loaded price table" |
-| Vendor price changes | Built-in prices are samples; edit `prices/local-prices.json`, no code change needed |
+| 缓存命中率 | 命中价通常只有未命中价的 1/10；命中率从 90% 掉到 60%，金额能翻几倍——这是账单差异最常见的原因 |
+| 时段判定 | 工作日 `09–12`、`14–18` 高峰（2×），其余与周末/节假日按基准价；`/budget debug` 会标出当时的判定 |
+| 四舍五入 | 单项线性计算，合计保留 6 位小数后展示，对账差几厘属正常 |
+| 未定价模型 | 展示按真实已知（通常 0），拦截按“已加载价格表里的最高单价” |
+| 厂商调价 | 内置价是示例值；改 `prices/local-prices.json` 即可，无需改代码 |
 
-## Cold start and snapshots
+## 冷启动与快照
 
-- Each snapshot holds the full `stepCharges` of the last `snapshotKeepTurns` turns (`sessionId:turn:step`, `peakCost/offpeakCost`, `eventTime`, `seq`).
-- A snapshot is **flushed synchronously** after every `assistant/message`, `turn/end` and `command/run` (all other events are debounced by 1.5s): those three points change settlements or budget declarations, and must not be lost even when a hot reload skips effect cleanup.
-- Besides `stepCharges`, each snapshot also stores `settledCharges`: a **rollback summary** for every settled step, with 14 fields in a fixed order (`tier, unknown, cost, shadow, tokens, input, inputMiss, output, cacheRead, three line items, model, seq`). Once a step's detail has been trimmed by the turn window, a retry can still "subtract the old, add the new" and is **no longer rejected**. The `calls`/peak-off-peak split of `byModel` and `byTier.tokens` do not need their own summary entries: they are derived from `(model, tier, cost, tokens)` (see the `addBucket` contract), and those four values in the summary are sufficient.
-- `settledCharges` has two levels of limits: the most recent `perSessionMaxSettled` (default 2000) entries keep a **rollback summary**; older records are demoted to a `null` marker (about 30 bytes, meaning only "already billed"), whose retries are **rejected** and counted in `counters.blockedSettlements` — never billed twice. The whole table is hard-capped at `2 × perSessionMaxSettled`; beyond that the **oldest** records are dropped (counted in `counters.settledEvicted`, with a warning). New steps are always recorded (summary first, marker later), and only retries of dropped, very old records would be billed twice.
-- Demotion is **batched**: once the summary count reaches the cap, the oldest 64 entries (`DEMOTE_BATCH`) are turned into markers at once, and the next 64 settlements are O(1) appends. Steady state is therefore **amortised O(1)**, never an O(n²) 2000-entry scan per step.
-- Audit counters (`replacedSettlements`, `blockedSettlements`, `settledEvicted`, `invalidTimeMessages`) take the **max** when merging multiple processes, which is a conservative lower bound: two processes may each have replaced/rejected/evicted different steps, so the real total is only larger. They are good for "did this happen at all", not for exact reconciliation.
-- The reason for this design: retries only happen within **the turn still in progress**, so "keep summaries in the newest window, keep only markers for old records" both guarantees correct replacement and bounds the snapshot size.
-- Each instance writes its own `<stem>.<pid>.<startedAt>.json`; reads merge every `<stem>*.json` in the directory, and the record with the newest `savedAt` wins per session.
-- **Multi-instance writes now merge**: merging **never adds money**, it only reconciles records. The watermark is `max(lastSeq, settledSeqWatermark)`:
-  - `lastSeq` = the highest event seq folded so far; `settledSeqWatermark` = the highest seq of a **settled** charge, which eviction never moves back down.
-  - Merging is entered when `disk lastSeq >= this process's lastSeq`, i.e. the disk folded the same log at least as far as this process. In that case every settlement in this process has a `seq` ≤ the disk watermark, so the disk total necessarily already includes them — **there is no "top up the amount" path in merging** (the `adopted` counter was removed in 0.3.3).
-  - This rule exists specifically to handle eviction: eviction deletes the oldest `settledCharges` records, but the money stays in `cost`. Judging by "does the disk list this key" would make evicted steps look like steps the disk never settled, so another process would add them and **bill twice**.
-  - Only keys whose `seq` does not exceed the watermark get a **marker** (`null`: no summary, no money), purely so later retries are rejected rather than re-billed; **keys above the watermark get nothing at all**, leaving settlement to the disk (adding a marker would make the disk reject its own first settlement). Summaries are never transplanted: the disk records its own amounts, and moving them over for rollback would contradict the total.
-  - The warning distinguishes the two outcomes: `kept N marker(s) without money` / `dropped N already-known key(s)`. **There are no "topped-up" or "left to disk" counters** — neither situation exists on the merge path (the former was confirmed unreachable in 0.3.3 and the latter in 0.3.4, and both were removed).
-  - **When `lastSeq` is equal**: this process is still the writer (keeping the newest detail replaceable) and only corrects `settledSeqWatermark` upwards to the disk maximum, **never downwards** (going back would make the next merge wrongly think "the disk has never seen many steps"). The log line is `snapshot watermark restore`.
-- `lastSeq` semantics: a **per-session log watermark**, equal to the highest `session/event.seq` folded into that state; merging takes the max, snapshots store it in `session.lastSeq`, and cold start uses it as the replay origin (events with `event.seq <= lastSeq` are skipped).
-- Old instance files are cleaned up by the `<pid>.<startTs>` in the filename: a file with this process's pid but a `startTs` from an earlier start (pid reuse) is deleted outright; files of other pids are kept while the process is alive, otherwise cleaned up according to `snapshotMaxAgeDays`. Only files from `SNAPSHOT_VERSION=2` onwards are read; 0.3.x files are not half-parsed but fully recomputed by replaying the log.
-- On cold start the snapshot is read and the UI first shows `≈¥17.09 (pending correction)`, never presenting 0 as the real value; it is corrected by replay once `agent/created` or a new event arrives, and `stale` returns to `false`.
-- With no state and no snapshot, the endpoint returns `loading: true` and the budget bar shows "Loading budget state…".
-- `snapshotMaxSessions` / `snapshotMaxAgeDays` bound growth: active sessions are kept first, inactive snapshots are cleaned up by age. Corrupt JSON files are skipped with a warning and do not affect other instances.
-- A snapshot is a derived cache, not the truth: the real accumulation still comes from the session log, and the log wins whenever it is newer than the snapshot.
+- 每条快照包含最近 `snapshotKeepTurns` 轮的全部 `stepCharges`（`sessionId:turn:step`、`peakCost/offpeakCost`、`eventTime`、`seq`）。
+- 每个 `assistant/message`、`turn/end`、`command/run` 之后都**同步 flush** 一次快照（其余事件走 1.5s 防抖）：这三个点会改变结算或预算声明，热重载不执行 effect cleanup 时也不能丢。
+- 除了 `stepCharges`，每条快照还保存 `settledCharges`：每个已结算 step 的**回滚摘要**，14 个字段固定顺序（`tier, unknown, cost, shadow, tokens, input, inputMiss, output, cacheRead, 三个分项, model, seq`）。某 step 的明细被轮次截断后，重试仍能「先减旧、再加新」，**不再拒绝**。`byModel` 的 `calls`/峰谷拆分与 `byTier.tokens` 不需要单独入摘要：它们由 `(model, tier, cost, tokens)` 推导（见 `addBucket` 的契约），摘要里这四个值已经够用。
+- `settledCharges` 有两级上限：最近 `perSessionMaxSettled`（默认 2000）条保留**可回滚摘要**；更早的记录降级为 `null` 标记（约 30 字节，只表示“已计费”），其重试会被**拒绝**并计入 `counters.blockedSettlements`，绝不会重复计费。整张表硬上限为 `2 × perSessionMaxSettled`，超出后丢弃**最早**的记录（`counters.settledEvicted` 计数 + 警示）：新步骤永远会被记录（先摘要、后标记），只有被丢弃的极旧记录若重试才会重复计费。
+- 降级是**批量**的：摘要数达到 cap 后，一次把最早的 64 条（`DEMOTE_BATCH`）改成标记，然后接下来 64 次结算都是 O(1) 追加。所以稳态是**摊还 O(1)**，不会出现每步扫描 2000 条的 O(n²)。
+- 审计计数（`replacedSettlements`、`blockedSettlements`、`settledEvicted`、`invalidTimeMessages`）在多进程合并时取 **max**，是保守下界：两个进程可能各替换/拒绝/逐出了不同的 step，真实总数只会更大。它们适合看“有没有发生”，不适合精确对账。
+- 这样设计的原因是：重试只发生在**仍在进行的那一轮**，所以“最新窗口保留摘要、旧记录只留标记”既保证替换正确，又让快照体积有界。
+- 每个实例写入自己的 `<stem>.<pid>.<startedAt>.json`，读取时合并同目录所有 `<stem>*.json`；同一会话取 `savedAt` 最新记录。
+- **多实例写入改为合并**：合并**永远不加钱**，只对账记录。水位取 `max(lastSeq, settledSeqWatermark)`：
+  - `lastSeq` = 已折叠的最大事件 seq；`settledSeqWatermark` = **已结算** charge 的最大 seq，逐出不会让它回退。
+  - 进入合并的条件是 `磁盘 lastSeq >= 本进程 lastSeq`，即磁盘在同一份日志上折得不比本进程浅。此时本进程每一笔结算的 `seq` 都 ≤ 磁盘水位，磁盘总额必然已经包含它们，**所以合并没有“补金额”这条路径**（`adopted` 计数在 0.3.3 已删除）。
+  - 这条规则专门防「逐出」：逐出会删掉最早的 `settledCharges` 记录，但金额仍留在 `cost` 里。若按“磁盘有没有列出这个 key”来判断，被逐出的 step 看起来像“磁盘从没结算过”，会被另一个进程补入并**重复计费**。
+  - `seq` 不超过水位的 key 才补一个**标记**（`null`，无摘要、无金额），作用仅是让后续重试被拒绝而不是重新计费；**超过水位的 key 什么都不补**，留给磁盘自己结算（补了标记会让磁盘拒绝自己的第一次结算）。不会搬运摘要：磁盘记的是它自己的金额，搬过来做回滚会与总额不一致。
+  - warn 会区分两种结果：`kept N marker(s) without money` / `dropped N already-known key(s)`。**没有“补金额”也没有“留给磁盘”那两个计数**——合并路径上不存在这两种情况（前者在 0.3.3、后者在 0.3.4 被确认为不可达并删除）。
+- **`lastSeq` 相等时**：仍以本进程为写入方（保留最近明细的可替换性），只把 `settledSeqWatermark` 向磁盘最大值纠偏，**绝不回退**（回退会让下次合并误判“磁盘没见过很多 step”）。日志里是 `snapshot watermark restore`。
+- `lastSeq` 的语义：**per-session 的日志水位**，等于该状态已折叠过的最大 `session/event.seq`；合并时取 max，快照里存于 `session.lastSeq`，冷启动用它作为重放起点（`event.seq <= lastSeq` 的事件跳过）。
+- 清理旧实例文件时按文件名里的 `<pid>.<startTs>` 判断：本进程 pid 但 `startTs` 不是本次启动（pid 复用）的文件直接删除；其他 pid 只要进程仍存活就不删，否则按 `snapshotMaxAgeDays` 清理。`SNAPSHOT_VERSION=2` 起的文件才会被读取；0.3.x 的旧格式不会被半解析，直接按日志重放重算。
+- 冷启动读取快照，UI 先显示 `≈¥17.09（待校正）`，不会拿 0 冒充真实值；`agent/created` 或新事件到达后按日志重放校正，`stale` 变回 `false`。
+- 没有任何状态且也没有快照时，接口返回 `loading: true`，预算条显示“预算状态加载中…”。
+- `snapshotMaxSessions` / `snapshotMaxAgeDays` 控制增长：活跃会话优先保留；非活跃快照按年龄清理。损坏的 JSON 文件 warn 后跳过，不影响其他实例。
+- 快照是派生缓存，不是真相：真正的累计仍来自会话日志；日志比快照新时以日志为准。
 
-**Structural change (0.4.0)**: the snapshot version is now 2 and summaries shrank from 16 to 14 entries (the two cache-write positions were removed); old 0.3.x snapshots are no longer read.
+**结构变更（0.4.0）**：快照版本升到 2，摘要从 16 项减为 14 项（去掉两个缓存写入位置），旧的 0.3.x 快照不再读取。
 
 ```json
-// 0.3.x (no longer read)
+// 0.3.x（不再读取）
 { "settledCharges": [["s:1:1", [1,0,0.002,0,1000,1000,1000,0,0,0,0.002,0,0,0,"deepseek-chat",3]]] }
 // 0.4.0
 { "settledCharges": [["s:1:1", [1,0,0.002,0,1000,1000,1000,0,0,0.002,0,0,"deepseek-chat",3]],
@@ -233,204 +233,202 @@ Common sources of discrepancy:
   "stepCharges": [["s:1:2", { "cost": 0.002, "...": "..." }]] }
 ```
 
-The summary array order is fixed at 14 entries: `[tier(1=peak), unknown(1), cost, shadow, tokens, input, inputMiss, output, cacheRead, bdMiss, bdHit, bdOut, model, seq]`. `seq` has three roles: ① audit; ② watermark comparison when merging across processes (see above); ③ it does **not** take part in `applyCharge` arithmetic — replacement is decided by the `(sessionId, turn, step)` key.
+摘要数组顺序固定为 14 项：`[tier(1=peak), unknown(1), cost, shadow, tokens, input, inputMiss, output, cacheRead, bdMiss, bdHit, bdOut, model, seq]`。`seq` 有三个角色：① 审计；② 跨进程合并的水位比较（见上节）；③ **不参与** `applyCharge` 的加减——替换判定以 `(sessionId, turn, step)` 这个 key 为准。
 
-`settledSeqWatermark` (new in 0.3.2) is "the highest seq of a settled charge"; neither eviction nor demotion moves it back. Snapshots that lack the field derive it from `lastSeq` (biased towards "already settled": better to reject an addition than to bill twice).
+`settledSeqWatermark`（0.3.2 新增）是“已结算 charge 的最大 seq”，逐出与降级都不会让它回退。旧快照没有该字段时按 `lastSeq` 推导（偏向“已结算”，宁可拒绝补入也不重复计费）。
 
-Old snapshot compatibility: files before version 2 are ignored and cold start fully replays the session log, so 0.3.x's 16-entry summaries can never roll back amounts with the wrong layout.
+旧快照兼容：版本 2 之前的文件会被忽略，冷启动按会话日志完整重放。这样 0.3.x 的 16 项摘要不会用错误布局回滚金额。
 
-**15-entry legacy summaries** (the layout before `seq` existed) **cannot be rolled back**. The policy is "count too little rather than twice": the old settlement for that key is no longer replaceable, later retries are **rejected** and counted in `blockedSettlements`, and the ledger stays at the old value; when merging, it only ever becomes a marker and money is never added for it.
+**15 项旧摘要**（`seq` 字段出现之前的布局）：这类记录**无法回滚**。处理方式是“宁可少计、不可重复”——该 key 的旧结算不再可替换，后续重试会被**拒绝**并计入 `blockedSettlements`，账目停在旧值；合并时它也只会变成标记，永远不会被补金额。
 
-**What to do when you see "N settlements were rejected"** (`blockedSettlements`):
+**看到「有 N 次结算被拒绝」怎么办**（`blockedSettlements`）：
 
-- It is a **historical cumulative count** that only grows — it reflects "how many retries were rejected" and **does not indicate how many bad records currently exist**. Repeated retries keep the number rising without making the ledger any worse.
-- Common sources: 15-entry summaries in snapshots from older versions, extremely old evicted steps, hand-edited snapshot files.
-- Recovery paths (the ledger follows the **session log**; snapshots are only a cache):
-  1. Run `/budget reset-snapshot` in the session: drop **this session's** cache and snapshot entry and re-bill from the log. It writes a tombstone snapshot with an updated timestamp, so other instances' stale caches are not read back (see "Multi-instance boundary" above).
-  2. To clear everything: stop DSH, delete `$DSH_HOME/budget-guard/snapshots.*.json`, then start again. Every session is replayed from its log (you lose the cold-start speed-up, and the ledger is more accurate).
-- Neither approach modifies the session log or any budget setting.
+- 它是**历史累计次数**，只增不减——反映“有多少次重试被拒绝”，**不代表当前有多少条坏数据**。反复重试会让这个数字一直涨，账目本身并没有变得更糟。
+- 常见来源：旧版本快照里的 15 项摘要、被逐出的极旧步骤、手工编辑过的快照文件。
+- 恢复路径（账目以**会话日志**为准，快照只是缓存）：
+  1. 在会话里执行 `/budget reset-snapshot`：丢弃**本会话**的缓存与快照条目，并按日志重新计费。它会写一份时间戳更新的墓碑快照，因此其他实例的旧缓存不会被读回来（详见上一节的“多实例边界”）。
+  2. 想彻底清空：关闭 DSH，删除 `$DSH_HOME/budget-guard/snapshots.*.json`，再启动。所有会话都会从日志重新重放（会丢掉冷启动加速，账目更准确）。
+- 两种做法都不会改会话日志，也不会改任何预算设置。
 
-## Unknown models / unknown prices
+## 未知模型 / 价格未知
 
-- Tokens of unpriced models go into `unknownTokens`. **Displayed cost counts only what is really known (usually 0), while interception uses `shadowCost`** — both must be shown at the same time, otherwise you get "it looks under budget but I was blocked".
-- `shadowCost` always takes the single highest "whole model × whole period" total price in the **loaded price table** (not the highest value per field, which could combine into a price that does not exist; and not discounted for the current period), i.e. "the most expensive period of the most expensive model". A unit test fixes this rule. User-facing text always says "the highest unit price in the loaded price table", never "the highest price anywhere".
-- When a shadow cost exists, the budget bar's main line shows `¥1.20 used (¥2.50 for decisions, incl. unknown estimate)`, so the real value and the interception value are visible together; the breakdown expands "unknown estimate (used only for interception)".
-- When the share of unpriced tokens reaches `unknownWarnRatio` (default 20%), it warns: "Unpriced models account for X% of tokens; interception is estimated at the highest unit price in the loaded price table and the real cost may be lower".
-- The budget bar appends `· price unknown`, the text turns yellow and gains a `⚠`.
-- `/budget prices` prints the loaded models, price sources, the list of unpriced models and how they are handled.
-- After filling in `prices/local-prices.json`, disable and re-enable the plugin and the marker disappears on its own.
-- There is no "vendor-average price" fallback: that would invent another figure that looks precise but is not; the current choice clearly says "price unknown" and protects the interception layer with the highest known unit price.
+- 未定价模型 token 计入 `unknownTokens`。**展示费用按真实已知计算（通常为 0），拦截判定使用 `shadowCost`** —— 两者必须同时显示，否则会出现“看着没超却被拦”。
+- `shadowCost` 的口径固定为：取**已加载价格表**中「整模型 × 整时段」总价最高的那一个（不是逐字段取最高，避免组合出不存在的超高价；也不按当前时段打折），即“最贵模型的最贵时段价”。单元测试固定了这条规则。文案统一写成「已加载价格表中的最高单价」，不要写成“全网最高价”。
+- 有 shadowCost 时，预算条主行显示 `已用 ¥1.20（判定 ¥2.50，含未知估算）`，真实值与拦截值同时可见；明细展开“未知估算（仅用于拦截判断）”。
+- 未定价 token 占比达到 `unknownWarnRatio`（默认 20%）时提示“未定价模型占 X% token，已按已加载价格表中的最高单价估算拦截，实际可能偏低”。
+- 预算条追加 `· 价格未知`，文字变黄并带 `⚠`。
+- `/budget prices` 打印已加载模型、价格来源、未定价模型清单和处理方式。
+- 补齐 `prices/local-prices.json` 后禁用/启用插件，标识自动消失。
+- 未做“同厂商均价”兜底：那会制造另一个看似精确但不准确的金额；当前选择明确显示“价格未知”，并在拦截层使用最高已知单价保护。
 
-## Parent task / subagent aggregation
+## 父任务 / 子代理聚合
 
-- Every state records `parentSessionId` (from `SessionHeader.parentSession`); `/dsh-budget/state` includes an `aggregate`:
-  `{ self, children[], childrenCost, totalCost, childrenTokens, totalTokens, complete, scope }`.
-- `children[]` is expanded recursively and carries `depth`; `childrenCost` includes every discovered descendant.
-- `complete` currently only means "no snapshot-only / pending-correction subagent remains in the discovered set", and it comes with `scope: 'discovered'`; without a stable `SessionHeader.children` in DSH it cannot be proven that unloaded subagents do not exist (`TODO: needs confirmation`).
-- The breakdown shows "incl. subagents: self ¥A + subagents ¥B = ¥C" and can expand each subagent.
-- Aggregation affects display only and **does not change** the interception of the parent or the children; a shared limit for the whole parent task still needs a stable `taskId` from the Host (`TODO: needs confirmation`).
+- 每条状态记录 `parentSessionId`（来自 `SessionHeader.parentSession`）；`/dsh-budget/state` 附带 `aggregate`：
+  `{ self, children[], childrenCost, totalCost, childrenTokens, totalTokens, complete, scope }`。
+- `children[]` 是递归展开的，带 `depth`；`childrenCost` 包含所有已发现后代。
+- `complete` 目前只表示“已发现集合里没有快照-only/待校正子代理”，并附 `scope: 'discovered'`；DSH 没有稳定的 `SessionHeader.children` 时无法证明未加载子代理不存在（`TODO: 需确认`）。
+- 预算条明细显示“含子代理：自身 ¥A + 子代理 ¥B = ¥C”，并可展开每个子代理。
+- 聚合只影响展示，**不改变**父/子各自的预算拦截；父任务统一限额仍需 Host 提供稳定 `taskId`（`TODO: 需确认`）。
 
-## Retries / period attribution
+## 重试 / 时段归属
 
-- Each settlement is wrapped in a single `Charge`; rolling back calls `applyCharge(state, charge, -1)` and subtracts `cost/shadowCost/totalTokens/input*`, `costBreakdown`, `byModel`, `byTier`, `unknownTokens/unknownModels` as a whole, so no new dimension is ever missed. Trimmed settlements roll back through a summary with the same fields, using the same convention.
-- "Continue" grants at most 30% cumulatively by default (a final value of 130%), below the hard-stop line `0.95 × 1.5 = 142.5%`; Config validation rejects any combination where `1 + maxGrantedPercent/100 >= interceptRatio × manualHardStopRatio`, and the error message states the actual numbers and which field to change.
-- `counters.replacedSettlements` / `blockedSettlements` / `lastSeq` / `settledCharges` are all per-session and are persisted into the snapshot, so audit counters survive a restart; all of them appear under `counters` in `/dsh-budget/state`, and the breakdown also shows "N settlements rejected / M settled / lastSeq X".
-- Period attribution uses `assistant/message`'s `event.time` (submission time), not render time; `toEpochMs` accepts `Z` / `+08:00` / no time zone (interpreted as Asia/Shanghai, with a warning).
-- When building a streaming test case that crosses an hour boundary, assert on the submission time.
+- 每笔结算封装为单一 `Charge`，回滚时 `applyCharge(state, charge, -1)` 整体减掉 `cost/shadowCost/totalTokens/input*`、`costBreakdown`、`byModel`、`byTier`、`unknownTokens/unknownModels`；新增维度不会漏。被截断的结算用同字段的摘要回滚，口径一致。
+- 「继续」默认最多累计放行 30%（终值 130%），低于硬停线 `0.95 × 1.5 = 142.5%`；Config 校验会拒绝 `1 + maxGrantedPercent/100 >= interceptRatio × manualHardStopRatio` 的组合，错误信息会写出具体数值和该改哪个字段。
+- `counters.replacedSettlements` / `blockedSettlements` / `lastSeq` / `settledCharges` 都是 per-session 且写入快照，重启后审计计数保留；三者都会出现在 `/dsh-budget/state` 的 `counters` 里，预算条明细也会显示“有 N 次结算被拒绝 / 已结算 M 条 / lastSeq X”。
+- 时段归属使用 `assistant/message` 的 `event.time`（提交时刻），不是渲染时间；`toEpochMs` 支持 `Z` / `+08:00` / 不带时区（按 Asia/Shanghai 解释并 warn）三种格式。
+- 构造跨整点流式用例时，按“提交时刻”验收。
 
-## Manual mode: temporary grant vs. silencing the prompt
+## 手动模式：临时放行 vs 关闭提示
 
-- `manual` only warns at the threshold and never cancels.
-- "Continue (+10%)" grants 10% of the budget each time and the prompt shows "X% granted so far"; once the cumulative amount reaches `maxGrantedPercent` (default 30%, final value 130%) the button becomes "Limit reached" and you can only abort or run `/budget off`. In other words, **3 clicks reach the ceiling** by default and there is no "continue" left on the 4th.
-- "Don't ask again" sets `manualSuppressed`: no further prompts for this task, though cost is still recorded; above `interceptRatio × manualHardStopRatio` (default 1.5, i.e. about 142.5%) it still force-aborts, so the guardrail cannot be bypassed entirely.
-- "Abort" calls `agent.cancel({ kind: 'user' })`.
+- `manual` 达到阈值时只提示，不取消。
+- 「继续 (+10%)」每次放行 10% 预算，提示显示“累计已放行 X%”；累计达到 `maxGrantedPercent`（默认 30%，终值 130%）后按钮变为「已达上限」，只能中止或 `/budget off`。也就是说默认**点 3 次就到顶**，第 4 次已经没有“继续”可点。
+- 「不再提示」设置 `manualSuppressed`：本次任务内不再弹提示，但仍记录费用；超过 `interceptRatio × manualHardStopRatio`（默认 1.5，即约 142.5%）时仍强制中止，避免完全绕过护栏。
+- 「中止」调用 `agent.cancel({ kind: 'user' })`。
 
-### How to continue after being blocked (applies to auto mode too)
+### 被拦截之后怎么继续（auto 模式同样适用）
 
-In `auto` mode reaching the threshold cancels the current turn outright. Cancellation is not the end: a line appears below the budget bar
+`auto` 模式到达阈值会直接取消本轮。取消不是终点：预算条下方会出现一行
 
 ```text
-This turn was stopped by the budget. [Continue (+10%)] [Lift restriction] [View details]
+本轮已因预算中止。 [继续 (+10%)] [解除限制] [查看明细]
 ```
 
-- **Continue (+10%)**: pushes the next interception line about 10% of the budget further out, enough for a few more steps; the cumulative ceiling is still `maxGrantedPercent`.
-- **Lift restriction**: this session will **no longer be aborted or rejected because of the budget** (`/budget unlock`, the same as typing it once). Cost keeps being tracked and the breakdown keeps updating — you are simply not blocked any more, which is the way out when you are stuck. Typing `/budget lock`, or setting a budget again in the conversation (`/budget 3`), restores interception automatically.
-- The unlocked state is written into the snapshot and survives restarts/replays; the budget bar shows `· restriction lifted`.
+- **继续 (+10%)**：把下一次拦截线推后约 10% 预算，够你再跑几步；累计上限仍是 `maxGrantedPercent`。
+- **解除限制**：本会话**不再因预算中止或拒绝**（`/budget unlock`，等价于在命令里敲一次）。费用照常统计、明细照常更新，只是不再拦你——这才是“被卡住后能继续工作”的出口。输入 `/budget lock`、或在命令里重设一次预算（`/budget 3`）都会自动恢复拦截。
+- 解除状态写在快照里，重启/重放后仍保持；预算条会显示 `· 已解除限制`。
 
-> Design trade-off: lifting the restriction is **per session**, is not written back to Config, does not affect other sessions, and does not erase recorded spending.
-- `/budget off` clears the session override, falls back to the **Config default budget**, and picks one of four messages depending on the actual config:
+> 设计取舍：解除限制是**按会话**的，不写回 Config，不影响其他会话；它也不会清掉已记录的消费。
+- `/budget off` 清除会话覆盖、回到 **Config 默认预算**，并按实际配置分四种文案：
 
-| Default config | Message |
+| 默认配置 | 文案 |
 | --- | --- |
-| Amount + tokens | `Session override cleared; default budget restored: ¥2.00 / 20.0k tokens (default budget still applies).` |
-| Amount only | `…default budget restored: ¥2.00 (default budget still applies).` |
-| Tokens only | `…default budget restored: 20.0k tokens (default budget still applies).` |
-| Neither | `Session override cleared; there is no default budget, so this session is no longer limited.` |
+| 金额 + Token | `已清除会话覆盖，恢复默认预算：默认金额 ¥2.00 / 默认 Token 20.0k tokens（仍会按默认预算拦截）。` |
+| 仅金额 | `…恢复默认预算：默认金额 ¥2.00（仍会按默认预算拦截）。` |
+| 仅 Token | `…恢复默认预算：默认 Token 20.0k tokens（仍会按默认预算拦截）。` |
+| 都没有 | `已清除会话覆盖；当前没有默认预算，本会话不再拦截。` |
 
-Only when the amount **and** the token budget are both 0 is there "no default budget"; a token line alone still keeps interception on.
+只有金额与 Token **都为 0** 才算“没有默认预算”；只设了 Token 线时同样会继续拦截。
 
-## HTTP routes
+## HTTP 路由
 
-- `/dsh-budget/state`, `/dsh-budget/action`, `/dsh-budget/config`, `/dsh-budget/config/save`.
-- `set-budget` on `/action` with `amount: 0, tokens: 0` is equivalent to `/budget off`: it clears the session override and falls back to the Config default budget (no live agent needed).
-- `/config` returns **all** Config keys plus four read-only fields `output`, `holidaysSource`, `priceSources`, `server` (see "Read-only fields" below).
-- The key allowlist for `/config/save` comes straight from `DEFAULTS`: new Config keys are savable automatically; unknown keys are a 400 `unknown-key`, and out-of-range / enum errors / cross-field conflicts are a uniform 400 `invalid` whose `issues` array is `[{ path: ['field'], message: 'reason' }]`, which the settings page displays directly as `path` + `message`.
-- **Credential model (0.3.0)**: `Origin` and `Sec-Fetch-Site` are ordinary request headers that a script can forge freely, so they are **not** credentials. What actually counts is the TCP peer address. Reads and writes are split:
-  - `/config/save` (changing the global budget) accepts **loopback peers** only by default (`requireLocalControl`, default `true`);
-  - `/action` (continue / don't ask again / abort / set budget for this task) also accepts loopback only by default (`requireLocalAction`, default `true`), but it can be **turned off separately**: it only affects the current session and is less risky than changing the global budget;
-  - read routes (`/state`, `/config`) stay same-origin open, so a remote GUI can still see the numbers;
-  - the bind address is read via `webServer.getOrigin()` and written into the `server` field of `/config`; **on a non-loopback bind** even the `Sec-Fetch-Site` fallback is dropped, and an exact `Origin` is required.
-- **Manual workflow over a remote GUI** (the answer to a `TODO: needs confirmation`): a remote browser cannot continue/abort by default (403). Two viable paths: ① forward `127.0.0.1:56675` with SSH port forwarding, so the request source address is loopback; ② turn off `requireLocalAction` in the "Access" group of the settings page so `/action` accepts same-origin remote requests (`/config/save` stays protected by `requireLocalControl`; the two are independent). With it off, same-origin pages on the LAN can also continue/abort the current session — at your own risk.
-- `Origin: null` is rejected explicitly; `allowedOrigins` compares protocol, host and port after URL normalisation, matching exactly, with no wildcards.
-- For cross-port development set `allowedOrigins: ['http://localhost:3000']`; in production keep the default empty list. No CORS is provided.
-- **Reverse proxy**: if the GUI is reached through a reverse proxy (`Origin`/`Host` differ from what DSH actually binds), the same-origin check fails. Either keep the proxy same-origin (rewrite `Host` and forward to `127.0.0.1`), or add the proxied origin to `allowedOrigins`. Note that `allowedOrigins` only allows cross-origin requests and does **not** bypass the loopback requirements of `/config/save` and `/action` — in a reverse-proxy setup, adjust `requireLocalControl` / `requireLocalAction` as needed.
-- Measured on the current deployment (the `server` field vs. `getOrigin()`): it listens on `127.0.0.1`, so non-loopback clients cannot connect; if it is later changed to `0.0.0.0`, the plugin warns in the log and automatically enables exact-Origin rules.
+- `/dsh-budget/state`、`/dsh-budget/action`、`/dsh-budget/config`、`/dsh-budget/config/save`。
+- `/action` 的 `set-budget` 传 `amount: 0, tokens: 0` 等价于 `/budget off`：清除会话覆盖、回到 Config 默认预算（不需要 live agent）。
+- `/config` 返回**全部** Config 键，外加四个只读字段 `output`、`holidaysSource`、`priceSources`、`server`（见下节「只读字段」）。
+- `/config/save` 的键白名单直接来自 `DEFAULTS`：新增 Config 键自动可保存；未知键 400 `unknown-key`，越界/枚举错误/跨字段冲突统一 400 `invalid`，`issues` 是 `[{ path: ['字段'], message: '原因' }]` 数组，设置页会把 `path` + `message` 直接显示出来。
+- **凭证机制（0.3.0）**：`Origin` 和 `Sec-Fetch-Site` 都是普通请求头，脚本可以随意伪造，所以它们**不是**凭证。真正起作用的是 TCP 对端地址。读与写分开：
+  - `/config/save`（改全局预算）默认只接受 **loopback 对端**（`requireLocalControl`，默认 `true`）；
+  - `/action`（继续 / 不再提示 / 中止 / 设置本次预算）默认同样只接受 loopback（`requireLocalAction`，默认 `true`），但它可以**单独关闭**：它只影响当前会话，风险低于改全局预算；
+  - 读路由（`/state`、`/config`）保持同源放行，远程 GUI 能正常看到数字；
+  - bind 地址通过 `webServer.getOrigin()` 读取并写入 `/config` 的 `server` 字段；**非 loopback 绑定时**连 `Sec-Fetch-Site` 兜底也取消，必须精确 `Origin`。
+- **远程 GUI 的 manual 工作流**（`TODO: 需确认` 的答案）：远程浏览器默认不能继续/中止（403）。两条可行路径：① 用 SSH 端口转发把 `127.0.0.1:56675` 映射到本地，请求源地址就是 loopback；② 在设置页「访问」里关闭 `requireLocalAction`，让 `/action` 接受同源远程请求（`/config/save` 仍受 `requireLocalControl` 保护，两者独立）。关闭后局域网内同源页面也能继续/中止当前会话，风险自负。
+- `Origin: null` 显式拒绝；`allowedOrigins` 通过 URL 规范化比较协议、主机和端口，精确匹配，不支持通配符。
+- 开发跨端口时设置 `allowedOrigins: ['http://localhost:3000']`，生产保持默认空列表；不提供 CORS。
+- **反向代理**：如果 GUI 通过反向代理访问（`Origin`/`Host` 与 DSH 实际绑定的不同），同源判定会失败。要么让代理保持同源（改写 `Host` 并转发为 `127.0.0.1`），要么把代理后的 origin 写进 `allowedOrigins`。注意 `allowedOrigins` 只是跨源放行，**不会**绕过 `/config/save`、`/action` 的 loopback 要求——反代场景请配合 `requireLocalControl` / `requireLocalAction` 按需调整。
+- 当前部署实测（`server` 字段与 `getOrigin()`）：监听在 `127.0.0.1`，非 loopback 客户端无法连上；如果将来改成 `0.0.0.0`，插件会在日志里 warn 并自动启用精确 Origin 规则。
 
-### Debugging a local save that returns 403
+### 本地保存被 403 拦住时怎么查
 
-Rules for `/config/save` and `/action` (since 0.3.9, with the Host fallback completed in 0.3.10):
+`/config/save` 与 `/action` 的规则（0.3.9 起，0.3.10 补齐 Host 回退）：
 
-1. **The peer must be local** (loopback) — unless you turn off `requireLocalControl` / `requireLocalAction`;
-2. **`Host` must point at this listener** (`127.0.0.1:port` / `localhost:port`, or a proxy host configured in `allowedOrigins`) — this is the key defence against DNS rebinding, so `evil.com` resolving to 127.0.0.1 still does not get through;
-3. When the two conditions above hold, **`Origin` is no longer required**. Early versions demanded `Origin` or `Sec-Fetch-Site`, but the desktop shell and some same-origin fetches send neither header, so local saves were wrongly rejected — a real bug fixed in 0.3.9. Since 0.3.10, even if `webServer.getOrigin()` is unavailable (`server.checked: false`), a loopback peer with a localhost/127.0.0.1/[::1] `Host` is let through, with no dependency on bind metadata.
+1. **对端必须是本机**（loopback）——除非你把 `requireLocalControl` / `requireLocalAction` 关掉；
+2. **`Host` 必须指向这个监听器**（`127.0.0.1:端口` / `localhost:端口`，或 `allowedOrigins` 里配置的代理主机）——这是防 DNS rebinding 的关键，`evil.com` 解析到 127.0.0.1 也过不了；
+3. 满足上面两条时**不再要求 `Origin`**。早期版本强制要求 `Origin` 或 `Sec-Fetch-Site`，而桌面壳/部分同源 fetch 两个头都不发，于是本机保存被误杀——这是 0.3.9 修掉的真实问题。0.3.10 起，即使 `webServer.getOrigin()` 不可用（`server.checked: false`），只要对端是 loopback 且 `Host` 是 localhost/127.0.0.1/[::1] 也放行，不再依赖 bind 元数据。
 
-When a request is rejected, `server.lastReject` in `GET /dsh-budget/config` reports `{ remote, forwardedFor, host, origin, secFetchSite, reason, at }`:
+被拒时，`GET /dsh-budget/config` 的 `server.lastReject` 会给出 `{ remote, forwardedFor, host, origin, secFetchSite, reason, at }`：
 
-| reason | Meaning / what to do |
+| reason | 含义 / 处理 |
 | --- | --- |
-| `not-loopback` | The peer is not local: you may be accessing remotely, or a proxy moved `localhost` away. Connect directly to `localhost` / `127.0.0.1`; if you really need remote changes, turn off `requireLocalControl` |
-| `no-origin-and-host-not-local` | No `Origin`, and `Host` is not this listener (reverse proxy / custom domain). Add the proxied origin to `allowedOrigins` |
-| `no-origin-on-public-bind` | The service is bound to `0.0.0.0`, so an exact `Origin` is mandatory (anyone can connect and `Host` no longer proves anything) |
-| `origin-host-mismatch` / `origin-null` | `Origin` disagrees with `Host`, or was explicitly set to `null` |
+| `not-loopback` | 对端不是本机：你可能是从远程访问，或代理把 `localhost` 转走了。让 `localhost` / `127.0.0.1` 直连；确实要远程改就关掉 `requireLocalControl` |
+| `no-origin-and-host-not-local` | 没带 `Origin`，且 `Host` 不是本监听器（反代/自定义域名）。把代理后的 origin 加进 `allowedOrigins` |
+| `no-origin-on-public-bind` | 服务绑在 `0.0.0.0`，此时必须带精确 `Origin`（任何人都能连，`Host` 不再证明什么） |
+| `origin-host-mismatch` / `origin-null` | `Origin` 与 `Host` 不一致，或被显式置为 `null` |
 
-Escape hatch when the proxy cannot be changed: turn off `requireLocalControl` in the "Access" group of the settings page (or add `requireLocalControl: false` to the `budget-guard` row in `cordis.patch.yml`). The cost is that **any page on the same network segment can change the global budget**, so turn it back on afterwards.
+无法改代理时的逃生舱：设置页「访问」里关掉 `requireLocalControl`（或在 `cordis.patch.yml` 给 `budget-guard` 行加 `requireLocalControl: false`）。代价是**同网段任意页面都能改全局预算**，用完建议改回来。
 
-## Read-only fields
+## 只读字段
 
-`GET /dsh-budget/config` returns four fields beyond the Config schema. They **cannot** be written back through `/config/save` (writing them counts as an unknown key):
+`GET /dsh-budget/config` 比 Config schema 多出四个字段，它们**不能**通过 `/config/save` 写回（写进去会被判为未知键）：
 
-| Field | Meaning |
+| 字段 | 含义 |
 | --- | --- |
-| `output` | The enabled flags derived from `enableTurnEstimate` + `estimateOutput`: `{ mode, chat, sidebar }` |
-| `holidaysSource` | `config` / `default` / `none` — where the holiday table actually comes from |
-| `priceSources` | The loaded price sources in order, e.g. `["built-in defaults", "official-prices.json"]` |
-| `server` | `{ origin, host, loopback, checked }` — the bind address the webServer actually advertises |
+| `output` | 由 `enableTurnEstimate` + `estimateOutput` 推导的允许位：`{ mode, chat, sidebar }` |
+| `holidaysSource` | `config` / `default` / `none`，节假日表实际来自哪里 |
+| `priceSources` | 已加载的价格来源顺序，如 `["内置默认", "official-prices.json"]` |
+| `server` | `{ origin, host, loopback, checked }`，webServer 实际公告的绑定地址 |
 
-## How the per-turn estimate works (no extra tokens)
+## 每轮预估怎么算（不花额外 Token）
 
-After each `turn/end` the plugin only reads numbers already recorded for this session and **never forecasts the future from historical averages**:
+每轮 `turn/end` 提交后，插件只读取本会话已经记录的数字，**不再用历史平均值预测未来**：
 
-1. **An explicit plan exists**
-   - Remaining steps are computed only when the model itself states a plan in this turn's text (`共 6 步`, `Step 3 of 8`, `6 steps`);
-   - Remaining amount/tokens are estimated as "recent average per turn (or per step) × remaining planned steps/turns";
-   - The payload carries `source: 'model_plan'`, and the UI labels it "(model plan, for reference only)".
-2. **No explicit plan**
-   - `remainingSteps`, `remainingCost`, `remainingTokens`, `projectedCost` and `projectedTokens` are all `null`;
-   - Only the **recent burn rate** is shown: the average `¥` and tokens over the last 3 turns (or the turns available if fewer than 3; or the last 3 steps if the current turn has not finished);
-   - The UI shows `Recent burn: ~¥0.05 / 15k tokens per turn`, and never "X turns remaining" or "expected cost X".
-3. **Over-budget notices**
-   - Once consumption reaches `warnRatio` (default 80%), the usual red budget warning appears;
-   - Below the warn line but with a plan-based extrapolation that would overshoot, only a **small yellow** note appears: `At the current pace this may exceed the budget`;
-   - `auto` mode still hard-stops at the original threshold and never relaxes because "the forecast says we are fine".
+1. **有明确计划**
+   - 仅当模型在本轮文本中自己写出计划（`共 6 步`、`Step 3 of 8`、`6 steps`）时，才计算剩余步数；
+   - 剩余金额/Token 用“近期平均每轮（或每步）消耗 × 计划剩余步数/轮数”估算；
+   - 返回数据带 `source: 'model_plan'`，UI 会标注「（模型计划，仅供参考）」。
+2. **没有明确计划**
+   - `remainingSteps`、`remainingCost`、`remainingTokens`、`projectedCost`、`projectedTokens` 全部返回 `null`；
+   - 只展示**近期燃烧率**：最近 3 轮（不足 3 轮时用已有轮次；本轮尚未结束则用最近 3 步）的平均 `¥` 和 Token；
+   - UI 显示 `近期消耗：约 ¥0.05 / 15k tokens 每轮`，不会出现“预计还需 X 轮”或“预计花费 X 元”。
+3. **超预算提示**
+   - 已消耗达到 `warnRatio`（默认 80%）时，照常显示红色预算预警；
+   - 未到预警线、但“模型计划”外推出的预计值会超时，只显示**黄色小字** `按近期速度，可能会超出预算`；
+   - `auto` 模式仍按原阈值硬拦截，不会因为“预估还没超”而放宽。
 
-Estimate results are always marked as estimates; they are not a new model request, do not change the conversation history and are not billed again. Historical averages are not a promise — a single step can swing wildly.
+估算结果始终带「估算」标记；它不是新的模型请求，不会改变会话历史，也不会重复计费。历史均值不是承诺，单步消耗可能剧烈波动。
 
-## UI
+## 界面
 
-- **Per-turn card** (`conversation.chat.turnTail`): shows "budget progress" above that turn's action row and appears only on the newest turn. With a model plan it shows completion, remaining steps/turns, remaining amount/tokens and the "(model plan, for reference only)" label; without one it shows only the progress bar, the amount used and `Recent burn: ~¥X / Y tokens per turn`, with no projected total. Going over budget turns red only at `warnRatio`; plan extrapolation gets a small yellow note only.
-- **Sidebar page** (`budget-guard:estimate`, a native tab in the DSH right sidebar): titled "Budget & progress" and persistently shows budget / used / decision value / tokens plus a progress bar; with a model plan it shows remaining steps and amount, without one it shows the recent burn rate and no projected total. Below are the full cost breakdown and the session budget form. The tab is registered by `dsh-better-sidebar` (`ctx.betterSidebar.registerTab`, where `single: true` means the id is globally unique and re-registration only focuses instead of stacking).
-  - When it opens: with `estimateOutput=sidebar` it **opens automatically once per session** (`localStorage`, 7-day expiry, and multiple tabs do not fight over focus); with `both` it opens automatically only when "the plan-based extrapolation would exceed the budget" — it is not a persistent panel, so choose `sidebar` or click "Open in the right sidebar…" in the budget breakdown if you want that.
-  - Historical averages may under- or over-estimate, but they are no longer used to predict the future; warnings still come through the budget bar colour and the card.
-- **Persistent budget bar** (`conversation.composer.dock`): same height and font size as the Host's own usage line. The main line shows only `No budget · ¥37.07 used` or `Budget ¥2.00 · ¥1.15 used`; **with a `shadowCost` it appends `(¥1.50 for decisions, incl. unknown estimate)`**, so the real value and the interception decision are visible together. A cold-start snapshot shows `≈… (pending correction)`, unpriced models append `· price unknown`, and manual mode with prompts silenced shows `· prompts off`. Clicking expands the breakdown: line items, peak/off-peak cost, latest model, current period, tokens, unknown models, the unknown estimate (used only for interception), parent/subagent aggregation, settlement health (`N settlements rejected` / `M settled · lastSeq`), price sources, and an expandable "Set budget for this task" input. At the threshold the text changes colour and a `⚠` appears; `manual` mode offers "Continue (+10%)", "Don't ask again" and "Abort".
-- **Settings page** (`settings.section` → Budget Guard): five groups — interception / per-turn estimate / default budget / snapshot / access — as described in "Option 3" above; the footer shows price sources, holiday source, sidebar availability and the bind address.
-- All UI uses `--dsw-alias-*` theme variables and follows light/dark themes.
-- The budget bar aligns with the Host's `activity` / `usage` status pills: font `calc(var(--dsh-content-font-size-secondary, 13px) - 1px)`, line height `calc(20px + var(--dsh-content-font-delta-secondary, 0px))`, colour `--dsw-alias-label-tertiary`, `padding: 1px 8px`, `border-radius: var(--dsw-radius-sm)`, `gap: 6px` and `tabular-nums`, with no extra margins; the hover background uses `--dsw-alias-interactive-bg-hover`.
+- **每轮卡片**（`conversation.chat.turnTail`）：在该轮操作行之前显示「预算进度」，只在最新一轮出现。有模型计划时显示完成度、剩余步数/轮数、剩余金额/Token，并标注「（模型计划，仅供参考）」；无计划时只显示进度条、已用金额与「近期消耗：约 ¥X / Y tokens 每轮」，不显示预计合计。超预算仅在达到 `warnRatio` 时红色，计划外推只给黄色小字提示。
+- **右侧栏页**（`budget-guard:estimate`，DSH 右侧栏的一个原生标签页）：标题「预算与进度」，常驻显示预算 / 已用 / 判定 / Token、进度条；有模型计划时显示剩余步数与金额，无计划时显示近期燃烧率，不显示预计合计。下方是完整费用明细与会话预算表单。标签页由 `dsh-better-sidebar`（`ctx.betterSidebar.registerTab`，`single: true` 表示该 id 全局单例、重复注册只聚焦不叠加）注册。
+  - 打开时机：`estimateOutput=sidebar` 时每会话**自动打开一次**（`localStorage` 记录，7 天过期，多个标签页不会重复抢焦点）；`both` 时只在“模型计划外推会超预算”时自动打开——它不是常驻面板，想要常驻请选 `sidebar` 或点预算条明细里的「在右侧栏打开…」。
+  - 历史均值可能低估或高估，但它不再被用来预测未来；预警仍会通过预算条变色与卡片提示。
+- **常驻预算条**（`conversation.composer.dock`）：与 Host 自己的 usage 行同高同字号。主行只显示 `未设置预算 · 已用 ¥37.07` 或 `预算 ¥2.00 · 已用 ¥1.15`；**有 `shadowCost` 时追加 `（判定 ¥1.50，含未知估算）`**，即真实值与拦截判定同时可见。冷启动快照显示 `≈…（待校正）`，未定价模型追加 `· 价格未知`，手动模式关闭提示后显示 `· 已关闭提示`。点击展开明细：分项费用、峰/谷费用、最近模型、当前时段、Token、未知模型、未知估算（仅用于拦截判断）、父任务/子代理聚合、结算健康度（`有 N 次结算被拒绝` / `M 条已结算 · lastSeq`）、价格来源，并可展开「设置本次预算」输入框。达到阈值时文字变色并出现 `⚠`；`manual` 模式提供「继续 (+10%)」「不再提示」「中止」。
+- **设置页**（`settings.section` → 预算护栏）：拦截 / 每轮预估 / 默认预算 / 快照 / 访问五组设置，见上文「方式三」；页脚显示价格来源、节假日来源、右侧栏可用性与绑定地址。
+- 所有 UI 使用 `--dsw-alias-*` 主题变量，跟随明暗主题。
+- 预算条与 Host 的 `activity` / `usage` 状态 pill 对齐：字体 `calc(var(--dsh-content-font-size-secondary, 13px) - 1px)`、行高 `calc(20px + var(--dsh-content-font-delta-secondary, 0px))`、颜色 `--dsw-alias-label-tertiary`、`padding: 1px 8px`、`border-radius: var(--dsw-radius-sm)`、`gap: 6px` 与 `tabular-nums`，不额外添加外边距；hover 背景使用 `--dsw-alias-interactive-bg-hover`。
 
-## Interception details
+## 拦截行为细节
 
-- `auto`: `turn-stopping` reaching the threshold triggers `agent.cancel({ kind: 'hook', reason: ... }, { keepInbox: true })`; if this step is already over budget, `pre-step` returns `{ kind: 'reject' }` and cancels, preventing one more model request.
-- DSH's current `agent/turn-stopping` signature is `Promise<void>` with no "cancellation signal" return value; the plugin calls the concrete agent's `cancel()` inside this extension point, which is equivalent to the spec's cancellation signal and preserves the `turn/end: aborted` audit trail.
-- `manual`: at the threshold it only sets `manualPending` without cancelling; the budget bar offers "Continue (+10%) / Don't ask again / Abort". "Abort" calls `agent.cancel({ kind: 'user' })`; "Continue" pushes the next prompt line about 10% of the budget further out and counts the prompt; "Don't ask again" only silences this task's prompts and still records cost.
-- The cancellation is recorded in this session's `turn/end` (`aborted`), so the audit chain is complete; the plugin introduces no new event types and cannot break session replay.
+- `auto`：`turn-stopping` 达到阈值 → `agent.cancel({ kind: 'hook', reason: ... }, { keepInbox: true })`；如果本步已经超预算，`pre-step` 直接返回 `{ kind: 'reject' }` 并取消，防止再发一次模型请求。
+- DSH 当前 `agent/turn-stopping` 的签名是 `Promise<void>`，没有“返回取消信号”的返回值；插件在这个扩展点内调用具体 Agent 的 `cancel()`，效果等价于规范中的取消信号，并保留 `turn/end: aborted` 审计。
+- `manual`：阈值时只置 `manualPending`，不取消；预算条出现「继续 (+10%) / 不再提示 / 中止」。点「中止」调用 `agent.cancel({ kind: 'user' })`；点「继续」把下一次提示线推后约 10% 预算并累计提示；「不再提示」只关闭本次任务提示，仍记录费用。
+- 取消记录会进入本会话 `turn/end`（`aborted`），因此审计链完整；插件不新增事件类型，不会破坏会话重放。
 
-## Zero dependencies and Config projection
+## 零依赖与 Config 投影
 
-`Config` does not import `@deepseek-ai/schemastery`; it exports a native schema graph carrying `Symbol.for('schemastery')`, `type` and `meta`. DSH's app-boot projector walks it statically (without executing validators), therefore:
+`Config` 不 import `@deepseek-ai/schemastery`，而是导出一个带 `Symbol.for('schemastery')`、`type`、`meta` 的原生 schema 图。DSH 的 app-boot 投影器会静态遍历它（不执行校验器），因此：
 
-- `Config.listConfigs` returns `status: "schema"` and `limitations: []` for this plugin;
-- the plugin manager's config page can generate a real form;
-- actual validation is still done by `Config['~standard'].validate`, and bad values throw `ValidationError`.
+- `Config.listConfigs` 对本插件返回 `status: "schema"`、`limitations: []`；
+- 插件管理器的配置页能生成真实表单；
+- 真正校验仍由 `Config['~standard'].validate` 完成，坏值会抛 `ValidationError`。
 
-This way a local-directory install (junction) cannot fail to load because an out-of-package dependency cannot be resolved.
+这样本地目录安装（junction）不会因为包外依赖解析失败而无法加载。
 
 
-## Build and test
-
-These commands apply to a source checkout of this repository:
+## 构建与测试
 
 ```bash
-node build.mjs        # uses Node's built-in stripTypeScriptTypes to generate lib/index.js, lib/pricing.js and lib/client.js
+node build.mjs        # 用 Node 内置 stripTypeScriptTypes 生成 lib/index.js、lib/pricing.js 与 lib/client.js
 node test/pricing.test.mjs
 node test/host.test.mjs
 node test/client.test.mjs
-node test/regression.test.mjs  # user-path regression: save / intercept / unlock / restore / commands / cold start
-node test/bom.test.mjs  # repository-wide BOM check, including lib/ (the generated files actually loaded at runtime)
+node test/regression.test.mjs  # 用户路径回归：保存 / 拦截 / 解锁 / 恢复 / 命令 / 冷启动
+node test/bom.test.mjs  # 全仓库 BOM 检查，含 lib/（运行时真正加载的生成物）
 ```
 
-Only Node built-in modules are used; no TypeScript, esbuild or network install is needed.
+只依赖 Node 内置模块，不需要 TypeScript、esbuild 或网络安装。
 
-`npm test` **runs `node build.mjs` first and then the five test files** — the tests import `lib/`, which a fresh clone does not have, so skipping the build fails with `ERR_MODULE_NOT_FOUND` (`bom.test.mjs` also asserts that the scan must hit `lib/client.js`). To run the tests without the build, use the individual commands above.
+`npm test` **先跑 `node build.mjs` 再跑五个测试文件**——测试 import 的是 `lib/`，新克隆的仓库没有 `lib/`，不先构建会直接 `ERR_MODULE_NOT_FOUND`（`bom.test.mjs` 里还有一条“扫描必须命中 `lib/client.js`”的断言）。想跳过构建只跑测试，就用上面的逐条命令。
 
-## Known limitations
+## 已知边界
 
-- Budgets are accounted **per session**; a subagent is its own session with its own budget. Parent/child **display aggregation** is provided (`aggregate`), but a shared limit for the whole parent task needs the Host to expose a stable `taskId`, which is not done yet (`TODO: needs confirmation`); `complete` only describes the discovered set.
-- Cold start shows the snapshot first (marked `pending correction`); with no snapshot at all it shows "Loading budget state…" until `agent/created` or the first event converges. `/budget` declarations are replayable from `command/run`.
-- Amounts are estimates and do not replace the bill; for unpriced models **displayed cost counts only what is known while interception uses `shadowCost`** (the most expensive period of the most expensive model in the loaded price table), and the main line shows both; fill in `prices/local-prices.json` to fix this.
-- Period attribution uses `assistant/message`'s `event.time` (the session submission time), not the request start time; second-precision timestamps are normalised to milliseconds automatically; strings without a time zone are interpreted as Asia/Shanghai and warn once; retries of the same step replace the final settlement (trimmed ones roll back through a summary), `Charge` rolls back as a whole, and `counters.replacedSettlements` / `blockedSettlements` persist for audit.
-- Manual mode's "Continue" grants about 10% each time and, after the cumulative `maxGrantedPercent` (default 30%, about 3 clicks), only abort remains; "Don't ask again" only silences prompts and still force-aborts at `manualHardStopRatio`; `/budget off` restores the Config default budget (a non-zero amount or token budget still intercepts, and the message says which line applies).
-- Snapshots are per-instance files (`<stem>.<pid>.<startedAt>.json`) merged on read; `snapshotKeepTurns` controls how many turns of `stepCharges` detail are kept, and retries of older turns are replaced through the `settledCharges` summary (no longer rejected) — only markers beyond `perSessionMaxSettled` degrade to rejection and count into `blockedSettlements`; `snapshotMaxSessions` / `snapshotMaxAgeDays` bound growth; stale writers now **merge-write** (disk as the base plus this process's own settlements), and cleanup identifies pid reuse by `<pid>.<startTs>`.
-- Credentials on the read/write paths: `/config/save` and `/action` only trust loopback peers by default (`requireLocalControl`), and `Origin`/`Sec-Fetch-Site` are additional checks rather than credentials; `Origin: null` is rejected; on a non-loopback bind even the `Sec-Fetch-Site` fallback is dropped; a remote GUI must explicitly set `requireLocalControl` to `false` to change budgets (the risk is documented).
-- The sidebar page depends on the `ctx.betterSidebar` service published by `dsh-better-sidebar` (DSH's own sidebar has no public slot for adding tabs): `budget-guard:estimate` is registered only when that bundle is installed, otherwise you just lose one entry point and `estimateOutput=sidebar` falls back to the chat card. The settings footer shows "Right sidebar: available / unavailable".
-- Auto-opening the sidebar records "once per session" in `localStorage` (7-day expiry); when storage is unavailable (private mode) it falls back to an in-memory flag, so it still opens only once per page. Note that `localStorage` is isolated by origin: `127.0.0.1:56675` and `localhost:56675` count as two sites, so the same session may auto-open once for each (`TODO: needs confirmation` on whether other port aliases exist).
-- Invalid timestamps only increment `counters.invalidTimeMessages` (a single number) and keep no per-message record, so the snapshot does not grow because of them.
-- Subagent aggregation results are cached for 500ms and invalidated only on `assistant/message` (which really produced cost) and on `agent/created`/`agent/disposed`. Under dense messaging the hit rate stays low — a deliberate correctness-first trade-off; the aggregate query is an in-memory walk and needs no more aggressive optimisation.
+- 预算是**按会话**核算的；子代理是独立会话、独立预算。父/子**展示聚合**已提供（`aggregate`），但父任务统一限额需要 Host 暴露稳定 `taskId`，当前未做（`TODO: 需确认`）；`complete` 只代表已发现集合。
+- 冷启动先显示快照（标注 `待校正`）；若连快照都没有，显示“预算状态加载中…”，等 `agent/created` 或第一条事件后收敛。`/budget` 声明可从 `command/run` 重放。
+- 金额是估算，不替代账单；未定价模型**展示费用按真实已知计、拦截判定用 `shadowCost`**（已加载价格表里最贵模型的最贵时段价），主行同时显示真实值与判定值；请用 `prices/local-prices.json` 补齐。
+- 时段判定使用 `assistant/message` 的 `event.time`（会话提交时刻），不是请求开始时刻；秒级时间戳自动归一为毫秒；不带时区的字符串按 Asia/Shanghai 解释且只 warn 一次；同一 step 的重试以最终结算替换（被截断的用摘要回滚），`Charge` 整体回滚，`counters.replacedSettlements` / `blockedSettlements` 持久化审计。
+- 手动模式「继续」每次放行约 10%，累计到 `maxGrantedPercent`（默认 30%，约 3 次）后只能中止；「不再提示」只关闭提示，达到 `manualHardStopRatio` 仍强制中止；`/budget off` 恢复 Config 默认预算（金额或 Token 任一非 0 都仍会拦截，文案会说明是哪一条）。
+- 快照按实例分文件（`<stem>.<pid>.<startedAt>.json`）并合并读取；`snapshotKeepTurns` 控制 `stepCharges` 明细保留轮数，更早的重试用 `settledCharges` 摘要替换（不再拒绝），只有超过 `perSessionMaxSettled` 的标记才降级为拒绝并计入 `blockedSettlements`；`snapshotMaxSessions` / `snapshotMaxAgeDays` 控制增长；stale writer 改为**合并写入**（磁盘为底 + 本进程独有结算），清理时按 `<pid>.<startTs>` 识别 pid 复用。
+- 读写路径的凭证：`/config/save` 与 `/action` 默认只认 loopback 对端（`requireLocalControl`），`Origin`/`Sec-Fetch-Site` 只是附加校验而不是凭证；`Origin: null` 拒绝；非 loopback bind 时连 `Sec-Fetch-Site` 兜底也取消；远端 GUI 需要改预算时必须显式把 `requireLocalControl` 设为 `false`（文档已标注风险）。
+- 右侧栏页依赖 `dsh-better-sidebar` 发布的 `ctx.betterSidebar` 服务（DSH 自己的右侧栏没有“新增标签页”的公开 Slot）：安装了该 bundle 才会注册 `budget-guard:estimate`，否则只是少一个入口，`estimateOutput=sidebar` 会自动退回对话卡片。设置页页脚会显示「右侧栏：可用 / 不可用」。
+- 自动打开右侧栏用 `localStorage` 记“每会话一次”（7 天过期）；隐私模式下 storage 不可用时退回内存标记，同一页面内仍只开一次。注意 `localStorage` 按 origin 隔离：`127.0.0.1:56675` 与 `localhost:56675` 会被当成两个站点，同一个会话可能各自动打开一次（`TODO: 需确认` 是否还有其他端口别名）。
+- 非法时间戳只累加 `counters.invalidTimeMessages`（一个数字），不会为每条非法消息保留记录，因此快照不会因此增长。
+- 子代理聚合结果有 500ms 缓存，只在 `assistant/message`（真的产生了费用）与 `agent/created`/`agent/disposed` 时失效。高密度消息下缓存命中率仍然很低——这是正确性优先的取舍，聚合查询本身是内存遍历，不需要更激进的优化。
