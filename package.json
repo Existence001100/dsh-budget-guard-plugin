@@ -1,5 +1,5 @@
 {
-  "name": "dsh-budget-guard",
+  "name": "dsh-budget-guard-plugin",
   "version": "0.4.1",
   "description": "A budget guard plugin for DSH (DeepSeek Harness).",
   "type": "module",
@@ -43,14 +43,14 @@
     "deepseek",
     "pricing"
   ],
-  "author": "Your Name",
+  "author": "Existence001100",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/dsh-budget-guard.git"
+    "url": "git+https://github.com/Existence001100/dsh-budget-guard.git"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/dsh-budget-guard/issues"
+    "url": "https://github.com/Existence001100/dsh-budget-guard/issues"
   },
-  "homepage": "https://github.com/yourusername/dsh-budget-guard#readme"
+  "homepage": "https://github.com/Existence001100/dsh-budget-guard#readme"
 }

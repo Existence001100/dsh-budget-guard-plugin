@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-# 预算护栏 · dsh-budget-guard
+# 预算护栏 · dsh-budget-guard-plugin
 
 给 DSH（DeepSeek Harness）的每一次任务加一条预算线：按 **人民币金额** 或 **Token 数量** 限制消耗，接近上限时预警，达到阈值时自动中止（`auto`）或询问你“继续 / 中止”（`manual`），并在**每轮结束后**估算还需多少步、还要花多少钱。
 
@@ -23,15 +23,15 @@
 在 DSH 里用插件管理器安装本插件（从 npm 安装直接可用；从本地目录安装会建立链接。若在源码目录里改过 `src/`，请重新 `node build.mjs`，再在插件页禁用/启用本插件，或重启 DSH）：
 
 ```text
-dsh plugin add dsh-budget-guard
+dsh plugin add dsh-budget-guard-plugin
 ```
 
-或在 DSH Web 的 **设置 → 插件 → 添加** 中搜索并添加 `dsh-budget-guard`。安装后 bundle 会插入一行 `budget-guard`，默认配置为：
+或在 DSH Web 的 **设置 → 插件 → 添加** 中搜索并添加 `dsh-budget-guard-plugin`。安装后 bundle 会插入一行 `budget-guard`，默认配置为：
 
 ```yaml
 - insert:
     - id: budget-guard
-      name: 'dsh-budget-guard'
+      name: 'dsh-budget-guard-plugin'
       config:
         interceptMode: auto
         enableTurnEstimate: true

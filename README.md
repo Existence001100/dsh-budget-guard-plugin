@@ -1,6 +1,6 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-# Budget Guard · dsh-budget-guard
+# Budget Guard · dsh-budget-guard-plugin
 
 Draws a budget line across every task in DSH (DeepSeek Harness): cap consumption by **CNY amount** or **token count**, warn as you approach the ceiling, and at the threshold either abort automatically (`auto`) or ask you to "continue / abort" (`manual`). After **every turn** it also estimates how many steps and how much money are left.
 
@@ -23,7 +23,7 @@ Draws a budget line across every task in DSH (DeepSeek Harness): cap consumption
 Install this package through the plugin manager in DSH (an npm install works out of the box; a local-directory install creates a link — if you edited `src/` in a source checkout, rebuild with `node build.mjs` and then disable/enable the plugin on the plugins page, or restart DSH):
 
 ```text
-dsh plugin add dsh-budget-guard
+dsh plugin add dsh-budget-guard-plugin
 ```
 
 Alternatively, open **Settings → Plugins → Add** in the DSH Web UI and pick this package. After installation the bundle inserts one `budget-guard` row with this default config:
@@ -31,7 +31,7 @@ Alternatively, open **Settings → Plugins → Add** in the DSH Web UI and pick 
 ```yaml
 - insert:
     - id: budget-guard
-      name: 'dsh-budget-guard'
+      name: 'dsh-budget-guard-plugin'
       config:
         interceptMode: auto
         enableTurnEstimate: true

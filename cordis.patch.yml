@@ -1,6 +1,6 @@
 - insert:
     - id: budget-guard
-      name: 'dsh-budget-guard'
+      name: 'dsh-budget-guard-plugin'
       config:
         interceptMode: auto
         enableTurnEstimate: true
