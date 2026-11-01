@@ -1,0 +1,22 @@
+{
+  "_comment": "Copy this file to prices/local-prices.json to override any field. Only the fields you set are replaced; the rest continue from official-prices.json or the built-in defaults. This example lowers deepseek-flash peak output and adds a local model. There is no cache-write price: cache-write tokens are billed as input_miss.",
+  "models": {
+    "deepseek-flash": {
+      "peak": {
+        "output": 6
+      }
+    },
+    "my-local-model": {
+      "peak": {
+        "input_miss": 1,
+        "input_hit": 0.1,
+        "output": 2
+      },
+      "offpeak": {
+        "input_miss": 0.5,
+        "input_hit": 0.05,
+        "output": 1
+      }
+    }
+  }
+}

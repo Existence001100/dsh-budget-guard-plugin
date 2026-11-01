@@ -1,0 +1,53 @@
+{
+  "_comment": "CNY per 1M tokens. Priority: built-in defaults < this file < local-prices.json. Peak: Mon-Fri 09:00-12:00 and 14:00-18:00 Asia/Shanghai; all other times are offpeak. Offpeak fields omitted fall back to 50% of peak. Cache writes have no separate price: their tokens are part of input_miss. Values are CNY per 1M tokens.",
+  "models": {
+    "deepseek-flash": {
+      "peak": {
+        "input_miss": 2,
+        "input_hit": 0.04,
+        "output": 8
+      },
+      "offpeak": {
+        "input_miss": 1,
+        "input_hit": 0.02,
+        "output": 4
+      }
+    },
+    "deepseek-v4-pro": {
+      "peak": {
+        "input_miss": 9,
+        "input_hit": 0.3,
+        "output": 27
+      },
+      "offpeak": {
+        "input_miss": 4.5,
+        "input_hit": 0.15,
+        "output": 13.5
+      }
+    },
+    "deepseek-chat": {
+      "peak": {
+        "input_miss": 2,
+        "input_hit": 0.2,
+        "output": 8
+      },
+      "offpeak": {
+        "input_miss": 1,
+        "input_hit": 0.1,
+        "output": 4
+      }
+    },
+    "deepseek-reasoner": {
+      "peak": {
+        "input_miss": 4,
+        "input_hit": 0.4,
+        "output": 6
+      },
+      "offpeak": {
+        "input_miss": 2,
+        "input_hit": 0.2,
+        "output": 3
+      }
+    }
+  }
+}

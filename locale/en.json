@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Budget Guard",
+    "description": "Caps each task to a CNY or token budget, prices every message at its actual Beijing peak/off-peak rate, warns at 80%, cancels or asks at the threshold, and shows recent burn after every turn; remaining steps are shown only when the model states a plan."
+  }
+}

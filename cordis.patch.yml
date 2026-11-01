@@ -1,0 +1,7 @@
+- insert:
+    - id: budget-guard
+      name: 'dsh-budget-guard'
+      config:
+        interceptMode: auto
+        enableTurnEstimate: true
+        estimateOutput: both

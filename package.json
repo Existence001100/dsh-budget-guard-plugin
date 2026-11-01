@@ -1,0 +1,56 @@
+{
+  "name": "dsh-budget-guard",
+  "version": "0.4.1",
+  "description": "A budget guard plugin for DSH (DeepSeek Harness).",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "prices",
+    "locale",
+    "cordis.patch.yml",
+    "icon.svg"
+  ],
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "budget",
+    "deepseek",
+    "pricing"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/dsh-budget-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/dsh-budget-guard/issues"
+  },
+  "homepage": "https://github.com/yourusername/dsh-budget-guard#readme"
+}
