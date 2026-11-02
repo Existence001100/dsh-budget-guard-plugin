@@ -19,7 +19,8 @@
     "icon.svg"
   ],
   "scripts": {
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "test": "node build.mjs && node test/pricing.test.mjs && node test/host.test.mjs && node test/client.test.mjs && node test/regression.test.mjs && node test/bom.test.mjs"
   },
   "engines": {
     "node": ">=22.13"
