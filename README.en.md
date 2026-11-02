@@ -9,6 +9,7 @@
 <strong>English</strong> · <a href="./README.md">简体中文</a>
 
 [![npm version](https://img.shields.io/npm/v/dsh-budget-guard-plugin?logo=npm&style=flat-square)](https://www.npmjs.com/package/dsh-budget-guard-plugin)
+[![CI](https://github.com/Existence001100/dsh-budget-guard-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/Existence001100/dsh-budget-guard-plugin/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-16a34a.svg?style=flat-square)](./LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-ESM-339933.svg?logo=nodedotjs&logoColor=white&style=flat-square)](https://nodejs.org/)
 
