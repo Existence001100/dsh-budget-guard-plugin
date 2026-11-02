@@ -19,18 +19,19 @@
 **🚀 快速安装**
 
 ```sh
-dsh plugin add dsh-budget-guard-plugin
+dsh plugin --profile web add dsh-budget-guard-plugin
 ```
 
-安装后请重启 DSH。详见[配置说明](#配置项)。
+安装后请重启 Web Profile。完整步骤（GitHub 安装、更新/卸载、本地开发）见[快速开始](#快速开始)。
 
-[🚀 安装](#安装) · [✨ 核心能力](#它能做什么) · [⚙️ 配置](#配置项) · [🐛 反馈](https://github.com/Existence001100/dsh-budget-guard/issues)
+[🚀 快速开始](#快速开始) · [✨ 核心能力](#它能做什么) · [⚙️ 配置](#配置项) · [🐛 反馈](https://github.com/Existence001100/dsh-budget-guard/issues)
 
 ## 目录
 
 - [它能做什么](#它能做什么)
 - [拦截流程](#拦截流程)
-- [安装](#安装)
+- [快速开始](#快速开始)
+- [兼容性](#兼容性)
 - [设置预算](#设置预算)
 - [配置项](#配置项)
 - [高峰 / 空闲计价](#高峰--空闲计价)
@@ -80,15 +81,23 @@ flowchart LR
 
 每条 `assistant/message` 都按它自己的 `event.time` 逐条计价后累计；判定使用金额与 Token 两条独立预算线，**任一先到即触发**，值为 0 的维度不参与。
 
-## 安装
+## 快速开始
 
-在 DSH 里用插件管理器安装本插件（从 npm 安装直接可用；从本地目录安装会建立链接。若在源码目录里改过 `src/`，请重新 `node build.mjs`，再在插件页禁用/启用本插件，或重启 DSH）：
+### 环境要求
 
-```text
-dsh plugin add dsh-budget-guard-plugin
+- DeepSeek Harness `0.2.x` 或更高版本；
+- Node.js `>=22.13`；
+- `PATH` 中存在 pnpm，供 `dsh plugin` 调用。
+
+### 从 npm 安装（推荐）
+
+```sh
+dsh plugin --profile web add dsh-budget-guard-plugin
 ```
 
-或在 DSH Web 的 **设置 → 插件 → 添加** 中搜索并添加 `dsh-budget-guard-plugin`。安装后 bundle 会插入一行 `budget-guard`，默认配置为：
+DSH 会识别包内的 `dsh.bundle` manifest，并自动把 `dsh-budget-guard-plugin` 加入 Web Profile。安装完成后，请重启正在运行的 Web Profile。
+
+安装后 bundle 会插入一行 `budget-guard`，默认配置为：
 
 ```yaml
 - insert:
@@ -100,7 +109,47 @@ dsh plugin add dsh-budget-guard-plugin
         estimateOutput: both
 ```
 
-`package.json` 已声明 `dsh.bundle.patch`、`exports["./client"]`、`locale/*.json`、`icon`，`files` 包含 `lib/` 与 `cordis.patch.yml`，因此打成的 npm 包也能被 `dsh plugin add` 识别。
+`package.json` 已声明 `dsh.bundle.patch`、`exports["./client"]`、`locale/*.json`、`icon`，`files` 包含 `lib/` 与 `cordis.patch.yml`，因此打成的 npm 包也能被 `dsh plugin` 识别。
+
+### 从 GitHub 安装
+
+```sh
+dsh plugin --profile web add github:Existence001100/dsh-budget-guard-plugin
+```
+
+需要测试 `main` 中尚未发布的变更时，可以使用 GitHub 来源；如需可复现安装，请固定到具体 commit。
+
+### 更新或卸载
+
+```sh
+dsh plugin --profile web update dsh-budget-guard-plugin
+dsh plugin --profile web remove dsh-budget-guard-plugin
+```
+
+执行任一操作后请重启 Profile，确保运行时 composition 与已安装 Bundle 一致。
+
+### 安装本地 Checkout 进行开发
+
+```sh
+git clone https://github.com/Existence001100/dsh-budget-guard-plugin.git
+cd dsh-budget-guard-plugin
+pnpm install --frozen-lockfile
+node build.mjs
+dsh plugin --profile web add .
+```
+
+插件自带的 `cordis.patch.yml` 会把 `budget-guard` 插入宿主 composition，对所有会话生效。
+
+## 兼容性
+
+| 组件 | 支持或持续验证范围 |
+| --- | --- |
+| DeepSeek Harness | `0.2.0` 及以上版本。持续跟进 DSH 宿主 API 变更。 |
+| Node.js | `>=22.13` |
+| pnpm | 最新版，配合 `dsh plugin` 使用 |
+| 操作系统 | Windows / macOS / Linux |
+
+本插件基于 DSH 官方扩展点（`agent/turn-stopping`、`agent/pre-step` 等）开发，不侵入模型核心逻辑。如果在使用中发现特定版本的 DSH 存在接口不兼容，请提交 [Issue](https://github.com/Existence001100/dsh-budget-guard/issues)。
 
 ## 设置预算
 

@@ -19,18 +19,19 @@ Draws a budget line across every task in DSH (DeepSeek Harness): cap consumption
 **🚀 Quick install**
 
 ```sh
-dsh plugin add dsh-budget-guard-plugin
+dsh plugin --profile web add dsh-budget-guard-plugin
 ```
 
-Restart DSH after installation. See [configuration](#configuration).
+Restart the Web profile after installation. Full steps (GitHub install, update/remove, local development) are in [Quick Start](#quick-start).
 
-[🚀 Installation](#installation) · [✨ Capabilities](#what-it-does) · [⚙️ Configuration](#configuration) · [🐛 Feedback](https://github.com/Existence001100/dsh-budget-guard/issues)
+[🚀 Quick Start](#quick-start) · [✨ Capabilities](#what-it-does) · [⚙️ Configuration](#configuration) · [🐛 Feedback](https://github.com/Existence001100/dsh-budget-guard/issues)
 
 ## Table of contents
 
 - [What it does](#what-it-does)
 - [Enforcement flow](#enforcement-flow)
-- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Compatibility](#compatibility)
 - [Setting a budget](#setting-a-budget)
 - [Configuration](#configuration)
 - [Peak / off-peak pricing](#peak--off-peak-pricing)
@@ -80,15 +81,23 @@ flowchart LR
 
 Each `assistant/message` is priced one by one using its own `event.time` and then summed; the decision uses two independent budget lines (amount and tokens), and **whichever is hit first wins** — a dimension set to 0 takes no part.
 
-## Installation
+## Quick Start
 
-Install this package through the plugin manager in DSH (an npm install works out of the box; a local-directory install creates a link — if you edited `src/` in a source checkout, rebuild with `node build.mjs` and then disable/enable the plugin on the plugins page, or restart DSH):
+### Requirements
 
-```text
-dsh plugin add dsh-budget-guard-plugin
+- DeepSeek Harness `0.2.x` or later;
+- Node.js `>=22.13`;
+- pnpm available on `PATH` for `dsh plugin`.
+
+### Install from npm (recommended)
+
+```sh
+dsh plugin --profile web add dsh-budget-guard-plugin
 ```
 
-Alternatively, open **Settings → Plugins → Add** in the DSH Web UI and pick this package. After installation the bundle inserts one `budget-guard` row with this default config:
+DSH recognizes the package's `dsh.bundle` manifest and adds `dsh-budget-guard-plugin` to the Web profile automatically. Restart a running Web profile after installation.
+
+After installation the bundle inserts one `budget-guard` row with this default config:
 
 ```yaml
 - insert:
@@ -100,7 +109,47 @@ Alternatively, open **Settings → Plugins → Add** in the DSH Web UI and pick 
         estimateOutput: both
 ```
 
-`package.json` already declares `dsh.bundle.patch`, `exports["./client"]`, `locale/*.json` and `icon`, and its `files` field includes `lib/` and `cordis.patch.yml`, so the published npm package is also recognised by `dsh plugin add`.
+`package.json` already declares `dsh.bundle.patch`, `exports["./client"]`, `locale/*.json` and `icon`, and its `files` field includes `lib/` and `cordis.patch.yml`, so the published npm package is also recognised by `dsh plugin`.
+
+### Install from GitHub
+
+```sh
+dsh plugin --profile web add github:Existence001100/dsh-budget-guard-plugin
+```
+
+Use the GitHub source when testing unreleased changes from `main`. Pin a commit when reproducibility matters.
+
+### Update or remove
+
+```sh
+dsh plugin --profile web update dsh-budget-guard-plugin
+dsh plugin --profile web remove dsh-budget-guard-plugin
+```
+
+Restart the profile after either operation so its composition matches the installed bundle set.
+
+### Install a local checkout for development
+
+```sh
+git clone https://github.com/Existence001100/dsh-budget-guard-plugin.git
+cd dsh-budget-guard-plugin
+pnpm install --frozen-lockfile
+node build.mjs
+dsh plugin --profile web add .
+```
+
+The included `cordis.patch.yml` inserts `budget-guard` into the host composition for all sessions.
+
+## Compatibility
+
+| Component | Supported or continuously verified |
+| --- | --- |
+| DeepSeek Harness | `0.2.0` or later. We continuously track DSH host API changes. |
+| Node.js | `>=22.13` |
+| pnpm | Latest version, used with `dsh plugin` |
+| Operating systems | Windows / macOS / Linux |
+
+This plugin is built on official DSH extension points (`agent/turn-stopping`, `agent/pre-step`, etc.) without modifying the core model logic. If you find an interface incompatibility in a specific DSH version, please open an [issue](https://github.com/Existence001100/dsh-budget-guard/issues).
 
 ## Setting a budget
 
