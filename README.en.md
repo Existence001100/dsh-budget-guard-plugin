@@ -13,6 +13,7 @@
 [![CI](https://github.com/Existence001100/dsh-budget-guard-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/Existence001100/dsh-budget-guard-plugin/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-16a34a.svg?style=flat-square)](./LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-ESM-339933.svg?logo=nodedotjs&logoColor=white&style=flat-square)](https://nodejs.org/)
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
 </div>
 
