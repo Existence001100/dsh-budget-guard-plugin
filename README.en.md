@@ -36,6 +36,7 @@ Restart the Web profile after installation. Full steps (GitHub install, update/r
 - [Quick Start](#quick-start)
 - [Compatibility](#compatibility)
 - [Setting a budget](#setting-a-budget)
+  - [Model prices (bottom of the settings page)](#Model-prices-bottom-of-the-settings-page)
 - [Configuration](#configuration)
 - [Peak / off-peak pricing](#peak--off-peak-pricing)
 - [How to reconcile amounts (when it doesn't match the official bill)](#how-to-reconcile-amounts-when-it-doesnt-match-the-official-bill)
@@ -60,6 +61,7 @@ Restart the Web profile after installation. Full steps (GitHub install, update/r
 | --- | --- | --- |
 | 🚦 | Budget declaration | Plugin Config (global default) or the `/budget` command in a conversation (current session only) |
 | 💸 | Live accounting | Accumulates input/output/cache tokens from `assistant/message.usage` in the session log; every message is billed at the Beijing peak/off-peak price **in effect at the moment it actually occurred** |
+| 💰 | Price Customization | Edit or add model prices directly in the Settings UI (perfect for official price changes or One API proxies). Takes effect immediately via hot-reload, no manual JSON edits required |
 | 🛑 | Automatic interception | Calls `agent.cancel({ kind: 'hook' })` from `agent/turn-stopping` once `interceptRatio` is reached; `agent/pre-step` rejects the next step when the budget is exceeded, so no further model calls are made |
 | ✋ | Manual interception | `manual` mode only warns and never cancels; the budget bar under the composer offers "Continue / Abort" buttons |
 | ⚠️ | Warning | At `warnRatio` (default 80%) a prominent notice appears on the budget bar and the per-turn card |
@@ -148,7 +150,7 @@ The included `cordis.patch.yml` inserts `budget-guard` into the host composition
 | Component | Supported or continuously verified |
 | --- | --- |
 | DeepSeek Harness | `0.2.0` or later. We continuously track DSH host API changes. |
-| Node.js | `>=22.13` |
+| Node.js | `^22.13.0` and `>=24.0.0` |
 | pnpm | Latest version, used with `dsh plugin` |
 | Operating systems | Windows / macOS / Linux |
 
@@ -169,10 +171,13 @@ This plugin is built on official DSH extension points (`agent/turn-stopping`, `a
 /budget unlock           # lift budget interception for this session (cost is still tracked, but nothing aborts or blocks)
 /budget lock             # restore budget interception for this session
 /budget off              # clear the session override and fall back to the Config default (restores interception too)
+/budget 0                # same as /budget off; so is /budget both 0 0
 /budget reset-snapshot   # drop this session's cache and snapshot entry and re-bill from the session log (for troubleshooting)
 ```
 
-**A budget of 0 (unset) never blocks anything.** `budgetAmount` and `tokenBudget` both default to `0`, meaning "this line does not exist": no turn is cancelled, `pre-step` does not reject, and no "continue?" prompt appears. Threshold checks are enabled only when the amount or the token budget is > 0. Being blocked although you never set a budget is a bug, not a design decision — a regression test pins this down (spending hundreds of thousands of tokens must neither cancel nor reject).
+**A budget of 0 (unset) never blocks anything.** `budgetAmount` and `tokenBudget` both default to `0`, meaning "this line does not exist": no turn is cancelled, `pre-step` does not reject, no `warnRatio` warning fires, and no "continue?" prompt appears. Threshold checks are enabled only when the amount or the token budget is > 0. `/budget 0` and `/budget both 0 0` are equivalent to `/budget off`: they clear the session override and fall back to the Config default (if that is also 0, the session is unlimited). Being blocked although you never set a budget is a bug, not a design decision — regression tests pin this down (spending 1.1M tokens must neither cancel nor reject).
+
+The UI matches that state: the composer bar says `No budget · ¥… used`, the estimate card / right-column page says "No budget · recording only" instead of a fake "≈0% of budget used", the progress bar is empty, and no manual grant buttons appear. `/budget continue` and `/budget suppress` are explicit no-ops without a budget (they must not pre-record a grant or a "prompts off" flag).
 
 `/budget reset-snapshot` exists for the "settlement rejected because the detail could not be rolled back" case:
 
@@ -202,6 +207,7 @@ Override this row in the profile's `cordis.patch.yml`, or open **Settings → Bu
 | Default budget | Default amount, default tokens, currency |
 | Snapshot | Cold-start snapshot toggle, sessions kept, days kept for inactive sessions, detail turns kept, per-session settlement record cap (`snapshotPath` is not here; see below) |
 | Access | Local-only settings changes (`requireLocalControl`), local-only actions on the current turn (`requireLocalAction`) |
+| Model prices | View current active prices, add custom models, override built-in/official prices with hot-reload (saved to `local-prices.json`) |
 
 **4 keys are not in the form** and can only be edited by hand in `cordis.patch.yml`: `snapshotPath` (free-form path), `allowedOrigins` (array), `holidays` (array of dates) and `useBuiltinHolidays` (toggle tied to `holidays`). Tests assert that "form keys + these 4 == every key in `DEFAULTS`", so forgetting a control when adding a Config key fails the tests immediately.
 
@@ -210,6 +216,19 @@ Ratio fields are entered as percentages (`85` means `0.85`). The footer shows th
 "Save all settings" posts to `POST /dsh-budget/config/save`: the Host merges the patch into the current Config and revalidates the whole thing with **exactly the same validator the plugin uses at load**, so cross-field rules (`warnRatio ≤ interceptRatio`, grant ceiling must stay below the hard-stop line) are rejected right there with a specific reason; unknown keys are a 400. It writes back the `config` of the current bundle row, which is equivalent to editing `cordis.patch.yml` by hand.
 
 > Fixed in 0.3.10: the settings page used to divide an already-fractional `warnRatio: 0.8` by 100 (yielding `0.008`), so every "save all settings" was rejected by the Host with `warnRatio must be ... between 0.01 and 1`. It now submits `0.8 / 0.95 / 0.2` unchanged.
+
+### Model prices (bottom of the settings page)
+
+At the bottom of the Settings page, there is an intuitive "Model Prices" editor. You can view, add, or edit peak/off-peak prices for any model in a table view (perfect for official price changes or One API proxies). Changes apply immediately via hot-reload, no manual JSON edits required.
+
+- The table lists every model in the **merged, effective** price book, showing `input miss / hit / output` for peak and off-peak, with one unit everywhere: **CNY / 1M tokens**.
+- Each row is labelled `builtin` / `official` / `user-defined` (local); hovering a number reveals the field name.
+- "Edit" turns that row's six unit prices into inputs (clearing a field keeps inheriting the layer below instead of writing a 0); "Add model" lets you type a model name (for example `gpt-4o`, which must match `message.source.model` exactly).
+- "Save prices" calls `POST /dsh-budget/prices/save`, which writes **only `$DSH_HOME/budget-guard/local-prices.json`** and then re-runs `finalizePriceBook` on the Host, so **the next turn is billed at the new price** without restarting DSH.
+- User-defined models have a "Delete" button: it removes the entry from `local-prices.json`, falling back to the official / built-in price (or back to "unpriced model" when neither layer defines it).
+- The success message is fixed: **"Prices updated and applied. Note: historical charges are not recomputed; to reprice this session, run `/budget reset-snapshot`."**
+
+> Prices and Config have separate save paths: unit prices go through "Save prices", budget/interception knobs go through "Save all settings".
 
 ```yaml
 - id: budget-guard
@@ -284,8 +303,10 @@ Unit prices affect only the **amount** accounting; token budgets always use the 
 
 > Corrected in 0.4.0: `output` is back to the official list price of **`8` (peak) and `4` (off-peak, 50%)**; input miss `2 / 1`, cache hit `0.04 / 0.02` (after DeepSeek's official price adjustment). The separate cache-write line item was also removed: cache-write tokens are already part of `input_miss` and are billed at the miss price.
 
-- Precedence: built-in defaults → [prices/official-prices.json](prices/official-prices.json) → `prices/local-prices.json`. Copy [prices/local-prices.example.json](prices/local-prices.example.json) to `prices/local-prices.json` to override any field.
-- The `official-prices.json` in this repository contains **conservative sample values** (the plugin never fetches prices from the network); before going live, override them with the official unit prices on your actual bill via `local-prices.json`. After editing a price file, disable and re-enable the plugin once for it to take effect.
+- Precedence: built-in defaults → [prices/official-prices.json](prices/official-prices.json) → `prices/local-prices.json` (packaged, legacy location, still read) → **`$DSH_HOME/budget-guard/local-prices.json` (written by the settings page, wins)**.
+- **Prefer the settings page** (Settings → Budget Guard → Model prices): it writes only `$DSH_HOME/budget-guard/local-prices.json`, never the npm package directory, and the table is **hot-reloaded immediately** — no disable/enable needed. Editing files by hand still works: copy [prices/local-prices.example.json](prices/local-prices.example.json) to `$DSH_HOME/budget-guard/local-prices.json` (the packaged `prices/local-prices.json` is also read, but it is replaced on upgrade).
+- The `official-prices.json` in this repository contains **conservative sample values** (the plugin never fetches prices from the network); before going live, override them with the official unit prices on your actual bill via `local-prices.json`.
+- A price change affects **future settlements only**: an already-settled charge keeps the unit price it was billed at (`/budget debug` shows it), and history is never rewritten — run `/budget reset-snapshot` to reprice the current session with the new table.
 - Missing `offpeak` fields default to `peak × 50%`. A price table only has the three fields `input_miss` / `input_hit` / `output`; cache writes have no separate unit price.
 - Unknown models: their tokens go into `unknownTokens`; **displayed cost counts only what is really known (0 for the unpriced part)**, while interception decisions use `shadowCost`; the budget bar and the breakdown show an unknown-model warning.
 - The built-in holiday table is a conservative list covering 2024–2026; override it through `holidays` according to the official schedule.
@@ -308,7 +329,7 @@ Common sources of discrepancy:
 | Period detection | Weekdays `09–12`, `14–18` are peak (2×), everything else plus weekends/holidays uses the base price; `/budget debug` marks the decision made at the time |
 | Rounding | Each item is computed linearly, and the total is displayed with 6 decimals; a few tenths of a cent of difference is normal |
 | Unpriced models | Displayed at the real known cost (usually 0), interception uses "the highest unit price in the loaded price table" |
-| Vendor price changes | Built-in prices are samples; edit `prices/local-prices.json`, no code change needed |
+| Vendor price changes | Built-in prices are samples; edit them in the settings page's "Model prices" group or in `$DSH_HOME/budget-guard/local-prices.json`, no code change needed |
 
 ## Cold start and snapshots
 
@@ -372,7 +393,7 @@ Old snapshot compatibility: files before version 2 are ignored and cold start fu
 - When the share of unpriced tokens reaches `unknownWarnRatio` (default 20%), it warns: "Unpriced models account for X% of tokens; interception is estimated at the highest unit price in the loaded price table and the real cost may be lower".
 - The budget bar appends `· price unknown`, the text turns yellow and gains a `⚠`.
 - `/budget prices` prints the loaded models, price sources, the list of unpriced models and how they are handled.
-- After filling in `prices/local-prices.json`, disable and re-enable the plugin and the marker disappears on its own.
+- Fix it in the settings page's "Model prices" group (written to `$DSH_HOME/budget-guard/local-prices.json`, applied on save), or edit the `models` object of that file directly; the legacy `prices/local-prices.json` is still read.
 - There is no "vendor-average price" fallback: that would invent another figure that looks precise but is not; the current choice clearly says "price unknown" and protects the interception layer with the highest known unit price.
 
 ## Parent task / subagent aggregation
@@ -425,14 +446,16 @@ Only when the amount **and** the token budget are both 0 is there "no default bu
 
 ## HTTP routes
 
-- `/dsh-budget/state`, `/dsh-budget/action`, `/dsh-budget/config`, `/dsh-budget/config/save`.
+- `/dsh-budget/state`, `/dsh-budget/action`, `/dsh-budget/config`, `/dsh-budget/config/save`, `/dsh-budget/prices`, `/dsh-budget/prices/save`.
 - `set-budget` on `/action` with `amount: 0, tokens: 0` is equivalent to `/budget off`: it clears the session override and falls back to the Config default budget (no live agent needed).
 - `/config` returns **all** Config keys plus four read-only fields `output`, `holidaysSource`, `priceSources`, `server` (see "Read-only fields" below).
+- `/prices` (GET) returns the **merged and finalized** effective price book: `{ currency, unit, offpeakFactor, localPath, sources, warnings, models: [{ model, origin, custom, peak, offpeak }] }`, where `origin` is `builtin` / `official` / `local`. It is a read route, so a remote GUI can display prices too.
+- `/prices/save` (POST) accepts `{ models: { model: { peak?, offpeak? } }, remove?: [model] }`, merges only the fields it was given into `$DSH_HOME/budget-guard/local-prices.json` (write-then-rename, no BOM) and then reloads and re-runs `finalizePriceBook` in memory; it returns `{ ok, applied, written, removed, localPath, prices }`. Invalid input is a 400 `invalid` with `issues` (paths like `['models', 'gpt-4o', 'peak', 'output']`); a write failure is a 500 `write-failed`. **Loopback only** (shares `requireLocalControl` with `/config/save`).
 - The key allowlist for `/config/save` comes straight from `DEFAULTS`: new Config keys are savable automatically; unknown keys are a 400 `unknown-key`, and out-of-range / enum errors / cross-field conflicts are a uniform 400 `invalid` whose `issues` array is `[{ path: ['field'], message: 'reason' }]`, which the settings page displays directly as `path` + `message`.
 - **Credential model (0.3.0)**: `Origin` and `Sec-Fetch-Site` are ordinary request headers that a script can forge freely, so they are **not** credentials. What actually counts is the TCP peer address. Reads and writes are split:
   - `/config/save` (changing the global budget) accepts **loopback peers** only by default (`requireLocalControl`, default `true`);
   - `/action` (continue / don't ask again / abort / set budget for this task) also accepts loopback only by default (`requireLocalAction`, default `true`), but it can be **turned off separately**: it only affects the current session and is less risky than changing the global budget;
-  - read routes (`/state`, `/config`) stay same-origin open, so a remote GUI can still see the numbers;
+  - read routes (`/state`, `/config`, `/prices`) stay same-origin open, so a remote GUI can still see the numbers;
   - the bind address is read via `webServer.getOrigin()` and written into the `server` field of `/config`; **on a non-loopback bind** even the `Sec-Fetch-Site` fallback is dropped, and an exact `Origin` is required.
 - **Manual workflow over a remote GUI** (the answer to a `TODO: needs confirmation`): a remote browser cannot continue/abort by default (403). Two viable paths: ① forward `127.0.0.1:56675` with SSH port forwarding, so the request source address is loopback; ② turn off `requireLocalAction` in the "Access" group of the settings page so `/action` accepts same-origin remote requests (`/config/save` stays protected by `requireLocalControl`; the two are independent). With it off, same-origin pages on the LAN can also continue/abort the current session — at your own risk.
 - `Origin: null` is rejected explicitly; `allowedOrigins` compares protocol, host and port after URL normalisation, matching exactly, with no wildcards.
@@ -496,7 +519,7 @@ Estimate results are always marked as estimates; they are not a new model reques
   - When it opens: with `estimateOutput=sidebar` it **opens automatically once per session** (`localStorage`, 7-day expiry, and multiple tabs do not fight over focus); with `both` it opens automatically only when "the plan-based extrapolation would exceed the budget" — it is not a persistent panel, so choose `sidebar` or click "Open in the right sidebar…" in the budget breakdown if you want that.
   - Historical averages may under- or over-estimate, but they are no longer used to predict the future; warnings still come through the budget bar colour and the card.
 - **Persistent budget bar** (`conversation.composer.dock`): same height and font size as the Host's own usage line. The main line shows only `No budget · ¥37.07 used` or `Budget ¥2.00 · ¥1.15 used`; **with a `shadowCost` it appends `(¥1.50 for decisions, incl. unknown estimate)`**, so the real value and the interception decision are visible together. A cold-start snapshot shows `≈… (pending correction)`, unpriced models append `· price unknown`, and manual mode with prompts silenced shows `· prompts off`. Clicking expands the breakdown: line items, peak/off-peak cost, latest model, current period, tokens, unknown models, the unknown estimate (used only for interception), parent/subagent aggregation, settlement health (`N settlements rejected` / `M settled · lastSeq`), price sources, and an expandable "Set budget for this task" input. At the threshold the text changes colour and a `⚠` appears; `manual` mode offers "Continue (+10%)", "Don't ask again" and "Abort".
-- **Settings page** (`settings.section` → Budget Guard): five groups — interception / per-turn estimate / default budget / snapshot / access — as described in "Option 3" above; the footer shows price sources, holiday source, sidebar availability and the bind address.
+- **Settings page** (`settings.section` → Budget Guard): covers five core groups: interception / per-turn estimate / default budget / snapshot / access. **At the bottom, there is an intuitive "Model Prices" editor** where you can add, edit, or delete peak/off-peak prices for any model in a table view. Changes apply immediately via hot-reload. The footer shows price sources, holiday source, sidebar availability and the bind address.
 - All UI uses `--dsw-alias-*` theme variables and follows light/dark themes.
 - The budget bar aligns with the Host's `activity` / `usage` status pills: font `calc(var(--dsh-content-font-size-secondary, 13px) - 1px)`, line height `calc(20px + var(--dsh-content-font-delta-secondary, 0px))`, colour `--dsw-alias-label-tertiary`, `padding: 1px 8px`, `border-radius: var(--dsw-radius-sm)`, `gap: 6px` and `tabular-nums`, with no extra margins; the hover background uses `--dsw-alias-interactive-bg-hover`.
 
@@ -539,7 +562,7 @@ Only Node built-in modules are used; no TypeScript, esbuild or network install i
 
 - Budgets are accounted **per session**; a subagent is its own session with its own budget. Parent/child **display aggregation** is provided (`aggregate`), but a shared limit for the whole parent task needs the Host to expose a stable `taskId`, which is not done yet (`TODO: needs confirmation`); `complete` only describes the discovered set.
 - Cold start shows the snapshot first (marked `pending correction`); with no snapshot at all it shows "Loading budget state…" until `agent/created` or the first event converges. `/budget` declarations are replayable from `command/run`.
-- Amounts are estimates and do not replace the bill; for unpriced models **displayed cost counts only what is known while interception uses `shadowCost`** (the most expensive period of the most expensive model in the loaded price table), and the main line shows both; fill in `prices/local-prices.json` to fix this.
+- Amounts are estimates and do not replace the bill; for unpriced models **displayed cost counts only what is known while interception uses `shadowCost`** (the most expensive period of the most expensive model in the loaded price table), and the main line shows both; fill them in via the settings page's "Model prices" group (written to `$DSH_HOME/budget-guard/local-prices.json`).
 - Period attribution uses `assistant/message`'s `event.time` (the session submission time), not the request start time; second-precision timestamps are normalised to milliseconds automatically; strings without a time zone are interpreted as Asia/Shanghai and warn once; retries of the same step replace the final settlement (trimmed ones roll back through a summary), `Charge` rolls back as a whole, and `counters.replacedSettlements` / `blockedSettlements` persist for audit.
 - Manual mode's "Continue" grants about 10% each time and, after the cumulative `maxGrantedPercent` (default 30%, about 3 clicks), only abort remains; "Don't ask again" only silences prompts and still force-aborts at `manualHardStopRatio`; `/budget off` restores the Config default budget (a non-zero amount or token budget still intercepts, and the message says which line applies).
 - Snapshots are per-instance files (`<stem>.<pid>.<startedAt>.json`) merged on read; `snapshotKeepTurns` controls how many turns of `stepCharges` detail are kept, and retries of older turns are replaced through the `settledCharges` summary (no longer rejected) — only markers beyond `perSessionMaxSettled` degrade to rejection and count into `blockedSettlements`; `snapshotMaxSessions` / `snapshotMaxAgeDays` bound growth; stale writers now **merge-write** (disk as the base plus this process's own settlements), and cleanup identifies pid reuse by `<pid>.<startTs>`.

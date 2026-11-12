@@ -1,7 +1,7 @@
 {
   "name": "dsh-budget-guard-plugin",
-  "version": "0.4.5",
-  "description": "A budget guard plugin for DSH (DeepSeek Harness).",
+  "version": "0.4.8",
+  "description": "Per-task CNY/token budget guard for DeepSeek Harness: paces, warns, cancels or asks, and shows recent burn after every turn; remaining steps are reported only when the model states a plan.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -42,7 +42,11 @@
     "dsh-plugin",
     "budget",
     "deepseek",
-    "pricing"
+    "pricing",
+    "deepseek-harness",
+    "cost",
+    "tokens",
+    "plugin"
   ],
   "author": "Existence001100",
   "license": "MIT",

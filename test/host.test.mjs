@@ -3,6 +3,15 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import { apply, Config, mergeSnapshotState, money, name, serializableState, stateFromSnapshot } from '../lib/index.js';
 
+// The price editor writes `$DSH_HOME/budget-guard/local-prices.json`. Anchor
+// DSH_HOME at a scratch directory so a real user price table on this machine
+// can never change an assertion here (and so this suite never writes to the
+// real profile). `test/bom.test.mjs` skips `.tmp-*`.
+const TEST_DSH_HOME = join(process.cwd(), 'test', '.tmp-dsh-home');
+rmSync(TEST_DSH_HOME, { recursive: true, force: true });
+mkdirSync(TEST_DSH_HOME, { recursive: true });
+process.env.DSH_HOME = TEST_DSH_HOME;
+
 function makeHarness(config, startSeq = 0, options = {}) {
   const events = [];
   const handlers = new Map();
@@ -281,6 +290,10 @@ function assistant(harness, usage, text, provider = 'deepseek', model = 'deepsee
   assert.ok(badCurrency.issues && badCurrency.issues.some((issue) => issue.message.includes('CNY or RMB')));
   assert.equal(Config['~standard'].validate({ currency: 'RMB' }).value.currency, 'RMB');
   assert.equal(Config['~standard'].validate({ currency: 'cny' }).value.currency, 'CNY');
+  const zeroBudget = Config['~standard'].validate({ budgetAmount: 0, tokenBudget: 0 });
+  assert.equal(zeroBudget.issues, undefined, '0 is a valid budget value');
+  assert.equal(zeroBudget.value.budgetAmount, 0);
+  assert.equal(zeroBudget.value.tokenBudget, 0);
   for (const key of [
     'unknownWarnRatio',
     'maxGrantedPercent',
@@ -1189,6 +1202,8 @@ function assistant(harness, usage, text, provider = 'deepseek', model = 'deepsee
   assert.equal(harness.commands.length, 1);
   assert.ok(harness.routes.has('/dsh-budget/action'));
   assert.ok(harness.routes.has('/dsh-budget/config'));
+  assert.ok(harness.routes.has('/dsh-budget/prices'));
+  assert.ok(harness.routes.has('/dsh-budget/prices/save'));
   assert.ok(state.pricing.sources.includes('official-prices.json'));
   assert.equal(state.pricing.holidaysSource, 'default');
 }
@@ -2407,9 +2422,96 @@ function assistant(harness, usage, text, provider = 'deepseek', model = 'deepsee
   assert.equal(decision.kind, 'enter', 'no pre-step rejection without a budget');
   const state = (await harness.callGet()).body.state;
   assert.equal(state.configured, false);
+  assert.equal(state.budget.label, '未设置预算');
+  assert.equal(state.overBudget, false, 'all-zero budget cannot be over budget');
+  assert.ok(!state.estimate || state.estimate.overBudget === false);
+  assert.equal(state.warning, null, 'all-zero budget produces no warning');
   assert.equal(state.manual.pending, false);
+  assert.equal(state.manual.canContinue, false, 'no manual continue button without a budget');
   assert.equal(state.guard.stopped, false);
   assert.ok(state.used.cost > 0, 'cost is still recorded');
+
+  // After the turn closes, the estimate card must not fake a 0% budget
+  // progress: there is no line, so it says so and keeps reporting burn.
+  harness.emit('turn/end', { turn: 1, reason: { kind: 'completed' } });
+  const withEstimate = (await harness.callGet()).body.state;
+  assert.ok(withEstimate.estimate, 'the estimate still exists with no budget');
+  assert.match(withEstimate.estimate.text, /未设置预算/);
+  assert.doesNotMatch(withEstimate.estimate.text, /预算已用约/, 'no fake 0% budget progress');
+  assert.equal(withEstimate.estimate.overBudget, false);
+  assert.equal(withEstimate.warning, null);
+  assert.equal(withEstimate.configured, false);
+}
+
+// ── all-zero budget in manual mode never prompts either ───────────────────
+{
+  const harness = makeHarness({
+    budgetAmount: 0,
+    tokenBudget: 0,
+    interceptMode: 'manual',
+    turnEstimateMinInterval: 0,
+  });
+  harness.emit('turn/start', { turn: 1 });
+  harness.emit('step/start', { turn: 1, step: 1 });
+  assistant(harness, { inputTokens: 900000, outputTokens: 200000 }, 'manual but unset');
+  await harness.turnStopping();
+  assert.equal(harness.cancels.length, 0, 'manual mode has nothing to stop for');
+  assert.equal((await harness.preStep()).kind, 'enter');
+  const state = (await harness.callGet()).body.state;
+  assert.equal(state.configured, false);
+  assert.equal(state.manual.pending, false, 'no manual prompt without a budget');
+  assert.equal(state.manual.canContinue, false);
+  assert.equal(state.manual.text, null);
+  assert.equal(state.warning, null);
+  assert.equal(state.overBudget, false);
+}
+
+// ── amount 0 does not interfere with a token-only budget ──────────────────
+{
+  const harness = makeHarness({ budgetAmount: 0, tokenBudget: 10000, interceptMode: 'auto', turnEstimateMinInterval: 0 });
+  harness.emit('turn/start', { turn: 1 });
+  harness.emit('step/start', { turn: 1, step: 1 });
+  assistant(harness, { inputTokens: 9000, outputTokens: 0 }, 'nine thousand');
+  await harness.turnStopping();
+  assert.equal(harness.cancels.length, 0, '9000 < 95% of a 10000 token budget');
+  assert.equal((await harness.preStep()).kind, 'enter');
+  let state = (await harness.callGet()).body.state;
+  assert.equal(state.budget.amount, 0);
+  assert.equal(state.budget.tokens, 10000);
+  assert.equal(state.configured, true, 'the token line still exists');
+  assert.equal(state.overBudget, false);
+
+  harness.emit('step/start', { turn: 1, step: 2 });
+  assistant(harness, { inputTokens: 2000, outputTokens: 0 }, 'eleven thousand', 'deepseek', 'deepseek-chat', undefined, 2);
+  await harness.turnStopping();
+  assert.equal(harness.cancels.length, 1, '11000 > 95% of a 10000 token budget');
+  state = (await harness.callGet()).body.state;
+  assert.equal(state.overBudget, true);
+}
+
+// ── token 0 does not interfere with an amount-only budget ─────────────────
+{
+  const harness = makeHarness({ budgetAmount: 1, tokenBudget: 0, interceptMode: 'auto', turnEstimateMinInterval: 0 });
+  harness.emit('turn/start', { turn: 1 });
+  harness.emit('step/start', { turn: 1, step: 1 });
+  // peak deepseek-flash: 250k miss = ¥0.5
+  assistant(harness, { inputTokens: 250000, outputTokens: 0 }, 'half a yuan');
+  await harness.turnStopping();
+  assert.equal(harness.cancels.length, 0, '¥0.5 < 95% of ¥1');
+  assert.equal((await harness.preStep()).kind, 'enter');
+  let state = (await harness.callGet()).body.state;
+  assert.equal(state.budget.amount, 1);
+  assert.equal(state.budget.tokens, 0);
+  assert.equal(state.configured, true);
+  assert.equal(state.overBudget, false);
+
+  harness.emit('step/start', { turn: 1, step: 2 });
+  // +300k = ¥0.6, total ¥1.1
+  assistant(harness, { inputTokens: 300000, outputTokens: 0 }, 'over a yuan', 'deepseek', 'deepseek-chat', undefined, 2);
+  await harness.turnStopping();
+  assert.equal(harness.cancels.length, 1, '¥1.1 > 95% of ¥1');
+  state = (await harness.callGet()).body.state;
+  assert.equal(state.overBudget, true);
 }
 
 // ── a budget stop can always be lifted from the UI (auto mode too) ────────
@@ -2468,5 +2570,146 @@ function assistant(harness, usage, text, provider = 'deepseek', model = 'deepsee
   harness.emit('command/run', { commandId: 'b2', name: 'budget', args: '0.02' });
   assert.equal((await harness.callGet()).body.state.guard.disabled, false, 'setting a budget re-arms the guard');
 }
+
+// ── model price settings: merged read, hot-reloaded save, custom removal ───
+{
+  const dir = join(process.cwd(), 'test', '.tmp-prices');
+  rmSync(dir, { recursive: true, force: true });
+  const previousHome = process.env.DSH_HOME;
+  process.env.DSH_HOME = dir;
+  try {
+    const localPriceFile = join(dir, 'budget-guard', 'local-prices.json');
+    const harness = makeHarness({ turnEstimateMinInterval: 0 });
+
+    // GET merges every layer and says where a save will land.
+    const initial = await harness.callGet('/dsh-budget/prices');
+    assert.equal(initial.status, 200);
+    const prices = initial.body.prices;
+    assert.equal(prices.unit, 'CNY / 1M tokens');
+    assert.equal(prices.offpeakFactor, 0.5);
+    assert.equal(prices.localPath, localPriceFile);
+    assert.ok(prices.sources.includes('official-prices.json'));
+    const flash = prices.models.find((item) => item.model === 'deepseek-flash');
+    assert.deepEqual(flash.peak, { input_miss: 2, input_hit: 0.04, output: 8 });
+    assert.deepEqual(flash.offpeak, { input_miss: 1, input_hit: 0.02, output: 4 });
+    assert.equal(flash.origin, 'official');
+    assert.equal(flash.custom, false);
+
+    // A save writes ONLY $DSH_HOME/budget-guard/local-prices.json.
+    const saved = await harness.callPost('/dsh-budget/prices/save', {
+      models: {
+        'deepseek-flash': { peak: { output: 9 } },
+        'gpt-4o-local': {
+          peak: { input_miss: 3, input_hit: 0.3, output: 12 },
+          offpeak: { input_miss: 1.5, input_hit: 0.15, output: 6 },
+        },
+        // Peak only: the offpeak tier must be inferred at 50%, never 0.
+        'peak-only-local': { peak: { input_miss: 4, input_hit: 0.4, output: 8 } },
+      },
+    });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal(saved.body.applied, true);
+    assert.ok(existsSync(localPriceFile), 'the price file lands under DSH_HOME');
+    assert.equal(
+      existsSync(join(process.cwd(), 'prices', 'local-prices.json')),
+      false,
+      'the packaged prices/ directory is never written',
+    );
+    const raw = readFileSync(localPriceFile, 'utf8');
+    assert.ok(!raw.startsWith('\uFEFF'), 'no BOM (it would break JSON.parse on the next load)');
+    const stored = JSON.parse(raw);
+    assert.equal(stored.models['deepseek-flash'].peak.output, 9);
+    assert.equal(
+      stored.models['deepseek-flash'].peak.input_miss,
+      undefined,
+      'only the edited field is written; the rest keeps inheriting',
+    );
+    assert.deepEqual(stored.models['gpt-4o-local'].offpeak, { input_miss: 1.5, input_hit: 0.15, output: 6 });
+
+    // Hot reload: the merged book in memory changed without a restart.
+    const after = (await harness.callGet('/dsh-budget/prices')).body.prices;
+    const flashAfter = after.models.find((item) => item.model === 'deepseek-flash');
+    assert.equal(flashAfter.peak.output, 9);
+    assert.equal(flashAfter.peak.input_miss, 2, 'unspecified fields still inherit');
+    assert.equal(flashAfter.origin, 'local');
+    assert.equal(flashAfter.custom, true);
+    assert.ok(after.models.some((item) => item.model === 'gpt-4o-local'));
+    const peakOnly = after.models.find((item) => item.model === 'peak-only-local');
+    assert.deepEqual(peakOnly.peak, { input_miss: 4, input_hit: 0.4, output: 8 });
+    assert.deepEqual(
+      peakOnly.offpeak,
+      { input_miss: 2, input_hit: 0.2, output: 4 },
+      'a peak-only custom model keeps the documented 50% off-peak fallback',
+    );
+    assert.ok(after.sources.includes(localPriceFile));
+
+    // And the next settlement bills with the new price: 1M output × ¥9.
+    const peak = Date.parse('2026-10-28T10:00:00+08:00'); // Wednesday peak
+    harness.emit('turn/start', { turn: 1 }, peak);
+    harness.emit('step/start', { turn: 1, step: 1 }, peak);
+    assistant(harness, { inputTokens: 0, outputTokens: 1000000 }, 'reprice', 'deepseek', 'deepseek-flash', peak);
+    const billed = (await harness.callGet()).body.state;
+    assert.ok(Math.abs(billed.used.cost - 9) < 1e-9, `the saved price is used for billing, cost=${billed.used.cost}`);
+
+    // Removing a custom model restores the inherited price.
+    const removed = await harness.callPost('/dsh-budget/prices/save', {
+      models: {},
+      remove: ['deepseek-flash', 'gpt-4o-local', 'peak-only-local'],
+    });
+    assert.equal(removed.status, 200, JSON.stringify(removed.body));
+    const restored = removed.body.prices.models.find((item) => item.model === 'deepseek-flash');
+    assert.equal(restored.peak.output, 8);
+    assert.equal(restored.origin, 'official');
+    assert.ok(!removed.body.prices.models.some((item) => item.model === 'gpt-4o-local'));
+
+    // A fresh instance reads the same file: the state is the file, not memory.
+    const cold = (await makeHarness({ turnEstimateMinInterval: 0 }).callGet('/dsh-budget/prices')).body.prices;
+    const coldFlash = cold.models.find((item) => item.model === 'deepseek-flash');
+    assert.equal(coldFlash.peak.output, 8, 'a restart loads the saved table');
+    assert.ok(!cold.models.some((item) => item.model === 'gpt-4o-local'));
+    assert.ok(!cold.sources.includes(localPriceFile), 'an emptied table adds no source');
+
+    // Validation: numbers only, with a field path in the issue.
+    const bad = await harness.callPost('/dsh-budget/prices/save', {
+      models: { 'gpt-4o-local': { peak: { output: '8' } } },
+    });
+    assert.equal(bad.status, 400);
+    assert.equal(bad.body.error, 'invalid');
+    assert.deepEqual(bad.body.issues[0].path, ['models', 'gpt-4o-local', 'peak', 'output']);
+    const negative = await harness.callPost('/dsh-budget/prices/save', {
+      models: { 'gpt-4o-local': { peak: { output: -1 } } },
+    });
+    assert.equal(negative.status, 400);
+    const empty = await harness.callPost('/dsh-budget/prices/save', {});
+    assert.equal(empty.status, 400);
+    assert.equal(empty.body.error, 'invalid');
+
+    // Same peer rule as /config/save: a remote browser may read, not write.
+    const remoteRead = await harness.callGet('/dsh-budget/prices', { host: '127.0.0.1:56675' }, '10.0.0.9');
+    assert.equal(remoteRead.status, 200, 'reads stay available to a remote GUI');
+    const remoteWrite = await harness.callPost(
+      '/dsh-budget/prices/save',
+      { models: { 'gpt-4o-local': { peak: { output: 1 } } } },
+      { host: '127.0.0.1:56675', origin: 'http://127.0.0.1:56675' },
+      '10.0.0.9',
+    );
+    assert.equal(remoteWrite.status, 403);
+
+    // The in-app hint points at the writable file, not the packaged example.
+    const command = harness.commands.find((item) => item.name === 'budget');
+    const report = await command.handler({
+      agent: harness.agent,
+      rawInput: 'prices',
+      signal: new AbortController().signal,
+    });
+    assert.equal(report.kind, 'success');
+    assert.ok(report.text.includes(localPriceFile), 'the hint names the settings-page file');
+  } finally {
+    process.env.DSH_HOME = previousHome;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+rmSync(TEST_DSH_HOME, { recursive: true, force: true });
 
 console.log('host tests passed');

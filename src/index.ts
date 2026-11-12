@@ -23,10 +23,11 @@
  *
  * A Client half renders the state served by the two HTTP routes below.
  */
-import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import {
+  DEFAULT_OFFPEAK_FACTOR,
   DEFAULT_PRICE_BOOK,
   finalizePriceBook,
   isPeak,
@@ -46,6 +47,8 @@ const SURFACE_PATH = '/dsh-budget/state';
 const ACTION_PATH = '/dsh-budget/action';
 const CONFIG_PATH = '/dsh-budget/config';
 const CONFIG_SAVE_PATH = '/dsh-budget/config/save';
+const PRICES_PATH = '/dsh-budget/prices';
+const PRICES_SAVE_PATH = '/dsh-budget/prices/save';
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_SESSIONS = 512;
 
@@ -513,7 +516,14 @@ function computeEstimate(state, config) {
     const burnText = recent.recentAvgCost === null
       ? '近期暂无完整轮次数据'
       : `近期消耗：约 ${money(recent.recentAvgCost, limit.currency)} / ${tokens(recent.recentAvgTokens)} tokens 每${recent.recentUnit === 'step' ? '步' : '轮'}`;
-    parts.push(`预算已用约 ${progressPercent}%`, burnText, `当前已用 ${spentLabel}${noBudget ? '' : ` / ${budgetText}`}`);
+    // With no configured line there is no percentage to report: "预算已用约
+    // 0%" would read as "you have used none of your budget" after 1M tokens,
+    // which is a worse lie than simply saying no budget is set.
+    parts.push(
+      noBudget ? '未设置预算（仅记录金额）' : `预算已用约 ${progressPercent}%`,
+      burnText,
+      `当前已用 ${spentLabel}${noBudget ? '' : ` / ${budgetText}`}`,
+    );
     text = `预算进度（近期）：${parts.join('；')}。不预测未来消耗。`;
   }
 
@@ -593,20 +603,10 @@ function unknownProtectionReached(state, config) {
 
 function warningOf(state, config) {
   const limit = limitOf(state, config);
-  if (!configured(limit)) {
-    if (unknownProtectionReached(state, config)) {
-      return {
-        level: 'warn',
-        text: `⚠ 未定价模型占 ${Math.round((state.unknownTokens / state.totalTokens) * 100)}% token，已按已加载价格表中的最高单价估算拦截，实际可能偏低。`,
-      };
-    }
-    return state.unknownTokens > 0
-      ? {
-          level: 'warn',
-          text: `⚠ 未知模型 ${tokens(state.unknownTokens)} tokens 未计价（展示费用按真实已知计；拦截按已加载价格表中的最高单价估算）。`,
-        }
-      : null;
-  }
+  // No configured line means no budget warning of any kind. Unknown-model
+  // details remain in `pricing.warnings`/`unknownTokens`; the budget `warning`
+  // banner is silent because there is no line to approach or cross.
+  if (!configured(limit)) return null;
   if (state.manualPending) {
     const grantedPercent = Math.min(100, state.manualContinues * 10);
     return {
@@ -648,8 +648,13 @@ function buildView(state, config, running, pricing, aggregate) {
   const ratios = ratiosOf(state, limit);
   const estimate = state.estimate ? { ...state.estimate, tag: stateTag(state, config) } : null;
   const currentPeak = isPeak(Date.now(), pricing.holidays);
+  const configuredLimit = configured(limit);
   const grantedPercent = state.manualSuppressed ? 100 : Math.min(100, state.manualContinues * 10);
-  const canContinue = state.manualContinues * 10 < num(config.maxGrantedPercent);
+  const canContinue = configuredLimit && state.manualContinues * 10 < num(config.maxGrantedPercent);
+  const manualPending = configuredLimit && state.manualPending;
+  const overBudget = configuredLimit &&
+    ((limit.amount > 0 && ratios.cost > limit.amount) ||
+      (limit.tokens > 0 && state.totalTokens > limit.tokens));
   const hardStopPercent = Math.round(
     num(config.interceptRatio) * num(config.manualHardStopRatio) * 1000,
   ) / 10;
@@ -746,16 +751,18 @@ function buildView(state, config, running, pricing, aggregate) {
     },
     estimate,
     preEstimate: state.turnsCompleted === 0 ? state.preEstimate : null,
+    /** Actual spend above the configured line; always false when both limits are 0. */
+    overBudget,
     warning: warningOf(state, config),
     manual: {
-      pending: state.manualPending,
+      pending: manualPending,
       suppressed: state.manualSuppressed,
       continues: state.manualContinues,
       grantedPercent,
       maxGrantedPercent: config.maxGrantedPercent,
       canContinue,
       hardStopPercent,
-      text: state.manualPending
+      text: manualPending
         ? `已消耗 ${money(ratios.cost, limit.currency)} / ${budgetLabel(limit)}，是否继续？（本次 +10%，累计已放行 ${grantedPercent}%）`
         : null,
     },
@@ -786,13 +793,13 @@ function buildView(state, config, running, pricing, aggregate) {
      * unlocked this session, so nothing will stop it again.
      */
     guard: {
-      disabled: !!state.guardDisabled,
+      disabled: configuredLimit && !!state.guardDisabled,
       disabledAt: num(state.guardDisabledAt),
       lastStopAt: num(state.lastStopAt),
       lastStopKind: state.lastStopKind || null,
-      canUnlock: configured(limit) && !state.guardDisabled,
-      canResume: configured(limit) && !state.guardDisabled && state.manualContinues * 10 < num(config.maxGrantedPercent),
-      stopped: configured(limit) && !state.guardDisabled && num(state.lastStopAt) > 0 && !state.manualPending,
+      canUnlock: configuredLimit && !state.guardDisabled,
+      canResume: configuredLimit && !state.guardDisabled && state.manualContinues * 10 < num(config.maxGrantedPercent),
+      stopped: configuredLimit && !state.guardDisabled && num(state.lastStopAt) > 0 && !manualPending,
     },
   };
 }
@@ -1280,6 +1287,11 @@ function applyBudgetInput(state, raw, config, options) {
     };
   }
   if (lower === 'suppress' || lower === 'dismiss' || lower === '不再提示') {
+    if (!configured(limit)) {
+      // With no line there is nothing to silence; recording "suppressed" here
+      // would make a later real budget look pre-suppressed.
+      return { text: '本会话未设置预算，没有需要关闭的预算提示。', action: null };
+    }
     if (quietActions) {
       return { text: '本次任务内不再提示预算拦截；费用仍会记录。', action: 'suppress' };
     }
@@ -1293,6 +1305,11 @@ function applyBudgetInput(state, raw, config, options) {
     };
   }
   if (lower === 'continue' || lower === 'go' || lower === '继续') {
+    if (!configured(limit)) {
+      // Ballooning the 10% grant for a budget that does not exist would make a
+      // later real budget inherit a grant the user never asked for.
+      return { text: '本会话未设置预算，无需放行；可用 /budget <金额> 设置预算。', action: null };
+    }
     const maxGranted = Math.max(0, num(config.maxGrantedPercent));
     if (state.manualContinues * 10 >= maxGranted) {
       return {
@@ -1330,6 +1347,11 @@ function applyBudgetInput(state, raw, config, options) {
     if (!Number.isFinite(amount) || amount < 0 || !Number.isFinite(tokenValue) || tokenValue < 0) {
       return { text: '预算格式无效：/budget both 2 20000', action: null };
     }
+    if (amount === 0 && tokenValue === 0) {
+      // `/budget both 0 0` is an explicit "no budget": clear the override and
+      // fall back to the Config default, exactly like `/budget off`.
+      return applyBudgetInput(state, 'off', config, options);
+    }
     state.override = { ...(state.override || {}), amount, tokens: tokenValue };
     state.manualSuppressed = false;
     state.manualPending = false;
@@ -1346,9 +1368,10 @@ function applyBudgetInput(state, raw, config, options) {
     input.match(/^([\d.]+)\s*(k|m)$/i);
   if (tokenMatch) {
     const value = scaleTokens(Number.parseFloat(tokenMatch[1]), tokenMatch[2]);
-    if (!Number.isFinite(value) || value <= 0) {
+    if (!Number.isFinite(value) || value < 0) {
       return { text: 'Token 预算格式无效：/budget 20000 tokens', action: null };
     }
+    if (value === 0) return applyBudgetInput(state, 'off', config, options);
     state.override = { ...(state.override || {}), tokens: Math.round(value) };
     state.manualSuppressed = false;
     state.manualPending = false;
@@ -1365,9 +1388,10 @@ function applyBudgetInput(state, raw, config, options) {
     input.match(/^([\d.]+)$/);
   if (amountMatch) {
     const amount = Number.parseFloat(amountMatch[1]);
-    if (!Number.isFinite(amount) || amount <= 0) {
+    if (!Number.isFinite(amount) || amount < 0) {
       return { text: '金额预算无效：/budget 2.5', action: null };
     }
+    if (amount === 0) return applyBudgetInput(state, 'off', config, options);
     state.override = { ...(state.override || {}), amount };
     state.manualSuppressed = false;
     state.manualPending = false;
@@ -1401,8 +1425,11 @@ function statusText(state, config) {
     `进度：${state.steps} 步 · ${state.toolCalls} 次工具调用 · ${state.turnsCompleted} 轮`,
   ];
   if (state.estimate) lines.push(state.estimate.text);
-  if (state.manualPending) lines.push(warningOf(state, config).text);
-  if (state.manualSuppressed) lines.push('本次任务已关闭预算提示；/budget off 可恢复。');
+  if (state.manualPending) {
+    const warning = warningOf(state, config);
+    if (warning) lines.push(warning.text);
+  }
+  if (configured(limit) && state.manualSuppressed) lines.push('本次任务已关闭预算提示；/budget off 可恢复。');
   if (state.unknownTokens > 0) {
     lines.push(
       `⚠ 未定价模型 ${Object.keys(state.unknownModels).join(', ') || 'unknown'}：` +
@@ -1462,7 +1489,10 @@ function priceReport(pricing, state) {
     lines.push(`当前已有 ${tokens(state.unknownTokens)} tokens 因未定价而展示费用为 0（拦截仍按最高单价估算）。`);
   }
   lines.push(`当前模型：${state.lastModel || '—'}（${state.lastTier === 'peak' ? '高峰' : '空闲'}）`);
-  lines.push('补齐方式：复制 prices/local-prices.example.json 为 prices/local-prices.json，加入对应 model 后重新加载插件。');
+  lines.push(
+    `补齐方式：在设置页「预算护栏 → 模型价格」中添加该 model（写入 ${pricing.localPath || localPricePath()}，保存即生效），` +
+      '或直接编辑该文件里的 models。',
+  );
   return lines.join('\n');
 }
 
@@ -1502,6 +1532,36 @@ function debugReport(state, pricing, limit) {
   return lines.join('\n');
 }
 
+const PRICE_FIELDS = ['input_miss', 'input_hit', 'output'];
+const PRICE_TIERS = ['peak', 'offpeak'];
+/** Names that must never become a write target on a plain object. */
+const PRICE_UNSAFE_NAMES = new Set(['__proto__', 'prototype', 'constructor']);
+/** Sanity ceiling for one unit price (元 / 1M tokens). */
+const PRICE_MAX_VALUE = 1000000;
+
+function dshHomePath() {
+  return process.env.DSH_HOME || join(homedir(), '.dsh');
+}
+
+/**
+ * Where the settings page writes user prices.
+ *
+ * This is deliberately *outside* the installed package: `prices/` belongs to
+ * the npm bundle and is replaced on upgrade, so writing there would silently
+ * lose user data (and "污染 npm 包目录" is exactly what the UI must not do).
+ */
+function localPricePath() {
+  return join(dshHomePath(), 'budget-guard', 'local-prices.json');
+}
+
+function readJsonFile(path) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
+
 function readPriceSource(name) {
   try {
     return JSON.parse(readFileSync(new URL(`../prices/${name}`, import.meta.url), 'utf8'));
@@ -1511,29 +1571,241 @@ function readPriceSource(name) {
 }
 
 /**
- * Price priority: built-in defaults → prices/official-prices.json →
- * prices/local-prices.json. Missing or malformed files are warnings, never a
- * reason to stop billing.
+ * Keep only `{models: {...}}` and drop names that would mutate an object's
+ * prototype. A price file is external input even when a human wrote it, so
+ * `models.__proto__` must never be copied into the shared book.
+ */
+function safePriceOverlay(raw) {
+  if (!isObject(raw) || !isObject(raw.models)) return undefined;
+  const models = Object.create(null);
+  for (const [model, value] of Object.entries(raw.models)) {
+    if (!model || PRICE_UNSAFE_NAMES.has(model)) continue;
+    models[model] = value;
+  }
+  // An empty table is "no overrides", not a source: deleting every custom
+  // model must leave the UI showing the same source list as before the edit.
+  return Object.keys(models).length ? { models } : undefined;
+}
+
+/**
+ * Price priority: built-in defaults → `prices/official-prices.json` (packaged)
+ * → `prices/local-prices.json` (legacy, packaged) → `$DSH_HOME/budget-guard/
+ * local-prices.json` (written by the settings page, wins).
+ *
+ * Missing or malformed files are warnings, never a reason to stop billing.
+ * `origins` records which source introduced a model so the UI can label a row
+ * "官方/内置" vs "用户自定义"; `localPath` is echoed to the UI so the user
+ * knows *which* file a save will touch.
  */
 function loadPriceBook() {
   const sources = ['内置默认'];
   const warnings = [];
+  const origins = Object.create(null);
+  for (const model of Object.keys(DEFAULT_PRICE_BOOK.models)) origins[model] = 'builtin';
   let book = mergePriceBooks(DEFAULT_PRICE_BOOK, undefined);
-  const official = readPriceSource('official-prices.json');
-  if (official !== undefined) {
+  const official = safePriceOverlay(readPriceSource('official-prices.json'));
+  if (official) {
     book = mergePriceBooks(book, official);
     sources.push('official-prices.json');
+    for (const model of Object.keys(official.models)) origins[model] = 'official';
   } else {
     warnings.push('prices/official-prices.json 缺失或无效，使用内置价格');
   }
-  const local = readPriceSource('local-prices.json');
-  if (local !== undefined) {
+  // Legacy hand-maintained file inside the package. Still read so an existing
+  // installation keeps billing the same way, but the UI-written file wins.
+  const packaged = safePriceOverlay(readPriceSource('local-prices.json'));
+  if (packaged) {
+    book = mergePriceBooks(book, packaged);
+    sources.push('prices/local-prices.json（插件目录，旧位置）');
+    for (const model of Object.keys(packaged.models)) origins[model] = 'local';
+  }
+  const localPath = localPricePath();
+  const local = safePriceOverlay(readJsonFile(localPath));
+  if (local) {
     book = mergePriceBooks(book, local);
-    sources.push('local-prices.json');
+    sources.push(localPath);
+    for (const model of Object.keys(local.models)) origins[model] = 'local';
+  } else if (existsSync(localPath)) {
+    warnings.push(`${localPath} 无法解析为价格表，已忽略（请在设置页修正或删除该文件）`);
   }
   const finalized = finalizePriceBook(book);
   warnings.push(...finalized.warnings);
-  return { book: finalized.book, sources, warnings };
+  return { book: finalized.book, sources, warnings, origins, localPath };
+}
+
+/** The merged book as the settings page renders it (CNY per 1M tokens). */
+function priceModelList(pricing) {
+  const list = [];
+  for (const [model, entry] of Object.entries(pricing.book.models || {})) {
+    if (!entry || !entry.peak || !entry.offpeak) continue;
+    const origin = (pricing.origins && pricing.origins[model]) || 'builtin';
+    const tier = (value) => ({
+      input_miss: num(value.input_miss),
+      input_hit: num(value.input_hit),
+      output: num(value.output),
+    });
+    list.push({
+      model,
+      origin,
+      custom: origin === 'local',
+      peak: tier(entry.peak),
+      offpeak: tier(entry.offpeak),
+    });
+  }
+  list.sort((left, right) => left.model.localeCompare(right.model));
+  return list;
+}
+
+/** Complete payload behind `GET /dsh-budget/prices`. */
+function pricePayload(pricing) {
+  return {
+    currency: DEFAULT_CURRENCY,
+    unit: 'CNY / 1M tokens',
+    offpeakFactor: DEFAULT_OFFPEAK_FACTOR,
+    localPath: pricing.localPath,
+    sources: pricing.sources || [],
+    warnings: pricing.warnings || [],
+    models: priceModelList(pricing),
+  };
+}
+
+/**
+ * Validate `POST /dsh-budget/prices/save`.
+ *
+ * One shape only: `{models:{name:{peak?,offpeak?}}, remove?:[name]}`. Every
+ * number is a unit price in 元 / 1M tokens, so a string or a negative value is
+ * an `invalid` issue with a field path instead of being silently coerced —
+ * a typo here changes every future settlement.
+ */
+function validatePriceBody(body) {
+  if (!isObject(body)) {
+    return { issues: [issue('body must be a JSON object', [])], models: Object.create(null), remove: [] };
+  }
+  const issues = [];
+  const models = Object.create(null);
+  const remove = [];
+  const rawModels = body.models === undefined ? {} : body.models;
+  if (!isObject(rawModels)) {
+    issues.push(issue('models must be an object keyed by model name', ['models']));
+  } else {
+    for (const [rawName, rawEntry] of Object.entries(rawModels)) {
+      const model = typeof rawName === 'string' ? rawName.trim() : '';
+      if (!model) {
+        issues.push(issue('model name must not be empty', ['models']));
+        continue;
+      }
+      if (model.length > 120) {
+        issues.push(issue('model name is longer than 120 characters', ['models', model]));
+        continue;
+      }
+      if (PRICE_UNSAFE_NAMES.has(model)) {
+        issues.push(issue(`model name "${model}" is not allowed`, ['models', model]));
+        continue;
+      }
+      if (!isObject(rawEntry)) {
+        issues.push(issue('a model price must be an object with peak/offpeak', ['models', model]));
+        continue;
+      }
+      const entry = Object.create(null);
+      let fields = 0;
+      for (const tierName of PRICE_TIERS) {
+        const rawTier = rawEntry[tierName];
+        if (rawTier === undefined) continue;
+        if (!isObject(rawTier)) {
+          issues.push(issue(`${tierName} must be an object`, ['models', model, tierName]));
+          continue;
+        }
+        const cleanTier = Object.create(null);
+        for (const field of PRICE_FIELDS) {
+          const value = rawTier[field];
+          if (value === undefined || value === null) continue;
+          if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > PRICE_MAX_VALUE) {
+            issues.push(
+              issue(
+                `${tierName}.${field} must be a number between 0 and ${PRICE_MAX_VALUE} (CNY / 1M tokens)`,
+                ['models', model, tierName, field],
+              ),
+            );
+            continue;
+          }
+          cleanTier[field] = value;
+          fields += 1;
+        }
+        if (Object.keys(cleanTier).length) entry[tierName] = cleanTier;
+      }
+      if (!fields) {
+        issues.push(
+          issue('at least one unit price is required (peak.input_miss / peak.input_hit / peak.output …)', [
+            'models',
+            model,
+          ]),
+        );
+        continue;
+      }
+      models[model] = entry;
+    }
+  }
+  const rawRemove = body.remove === undefined ? [] : body.remove;
+  if (!Array.isArray(rawRemove)) {
+    issues.push(issue('remove must be an array of model names', ['remove']));
+  } else {
+    for (const item of rawRemove) {
+      if (typeof item !== 'string' || !item.trim()) {
+        issues.push(issue('remove entries must be non-empty strings', ['remove']));
+        continue;
+      }
+      remove.push(item.trim());
+    }
+  }
+  if (!issues.length && !Object.keys(models).length && !remove.length) {
+    issues.push(issue('nothing to save: models and remove are both empty', ['models']));
+  }
+  return { issues, models, remove };
+}
+
+/**
+ * Merge a validated patch into the local price file and write it atomically.
+ * Only the fields the user edited are written; everything else keeps
+ * inheriting from the packaged layers, so a UI save cannot accidentally pin a
+ * value that later follows an official change.
+ */
+function writeLocalPrices(localPath, models, remove) {
+  const existing = readJsonFile(localPath);
+  const base = isObject(existing) && isObject(existing.models) ? existing.models : {};
+  const next = Object.create(null);
+  for (const [model, entry] of Object.entries(base)) {
+    if (!model || PRICE_UNSAFE_NAMES.has(model)) continue;
+    next[model] = isObject(entry) ? entry : Object.create(null);
+  }
+  for (const [model, entry] of Object.entries(models)) {
+    const current = isObject(next[model]) ? next[model] : Object.create(null);
+    const merged = Object.create(null);
+    for (const [key, value] of Object.entries(current)) merged[key] = value;
+    for (const tierName of PRICE_TIERS) {
+      if (!entry[tierName]) continue;
+      const tierSource = isObject(merged[tierName]) ? merged[tierName] : Object.create(null);
+      const tierNext = Object.create(null);
+      for (const [key, value] of Object.entries(tierSource)) tierNext[key] = value;
+      for (const [key, value] of Object.entries(entry[tierName])) tierNext[key] = value;
+      merged[tierName] = tierNext;
+    }
+    next[model] = merged;
+  }
+  for (const model of remove) delete next[model];
+  const document = {
+    _comment:
+      '由 DSH 设置页「模型价格」写入；只覆盖写出的字段，其余继承 official-prices.json 或内置价。' +
+      '单位：元 / 1M tokens。删除该文件或删除其中的模型即可恢复默认价。',
+    models: next,
+  };
+  mkdirSync(dirname(localPath), { recursive: true });
+  // Write-then-rename: a crash mid-write must not leave a half price table
+  // that the next load would reject. `writeFileSync` with a string emits UTF-8
+  // without a BOM, which the package-wide BOM test relies on.
+  const temporary = `${localPath}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(document, null, 2)}\n`, 'utf8');
+  renameSync(temporary, localPath);
+  return { written: Object.keys(models).length, removed: remove.length };
 }
 
 /**
@@ -2053,9 +2325,28 @@ export function apply(ctx, config) {
     book: priceInfo.book,
     holidays: holidayInfo.dates,
     sources: priceInfo.sources,
+    origins: priceInfo.origins,
+    localPath: priceInfo.localPath,
     holidaysSource: holidayInfo.source,
     warnings: priceInfo.warnings,
     logger: ctx.logger,
+  };
+
+  /**
+   * Re-read the price files in place so a save takes effect on the next
+   * `assistant/message` without restarting DSH. Already settled charges keep
+   * the unit price they were billed at (`charge.price`); only future
+   * settlements use the new book.
+   */
+  const refreshPriceBook = () => {
+    const info = loadPriceBook();
+    pricing.book = info.book;
+    pricing.sources = info.sources;
+    pricing.origins = info.origins;
+    pricing.localPath = info.localPath;
+    pricing.warnings = info.warnings;
+    for (const warning of info.warnings) ctx.logger?.warn?.(`[${PLUGIN_ID}] ${warning}`);
+    return info;
   };
   const snapshots = loadSnapshotFile(cfg, (message) => ctx.logger?.warn?.(`[${PLUGIN_ID}] ${message}`));
   let snapshotTimer = null;
@@ -2750,6 +3041,86 @@ export function apply(ctx, config) {
           sendJson(response, 400, { ok: false, error: 'unknown-action' });
         },
       });
+      const pricesGetRoute = webCtx.webServer.register({
+        kind: 'exact',
+        path: PRICES_PATH,
+        handler: async (request, response) => {
+          if (request.method !== 'GET') {
+            response.writeHead(405, { allow: 'GET' });
+            response.end();
+            return;
+          }
+          // Read-only: the same origin rule as `/state` and `/config`, so a
+          // remote GUI can *see* prices without being able to change them.
+          if (!routeOrigin(request, false, false)) {
+            sendJson(response, 403, { ok: false, error: 'origin' });
+            return;
+          }
+          sendJson(response, 200, { ok: true, prices: pricePayload(pricing) });
+        },
+      });
+      const pricesPostRoute = webCtx.webServer.register({
+        kind: 'exact',
+        path: PRICES_SAVE_PATH,
+        handler: async (request, response) => {
+          if (request.method !== 'POST') {
+            response.writeHead(405, { allow: 'POST' });
+            response.end();
+            return;
+          }
+          // Changing a unit price changes every future settlement, so it has
+          // the same blast radius as changing the global budget: loopback only
+          // under the same `requireLocalControl` switch.
+          if (!routeOrigin(request, true, cfg.requireLocalControl !== false)) {
+            sendJson(response, 403, { ok: false, error: 'origin' });
+            return;
+          }
+          let body;
+          try {
+            body = await readJsonBody(request);
+          } catch (error) {
+            sendJson(response, 400, { ok: false, error: String(error && error.message ? error.message : error) });
+            return;
+          }
+          const checked = validatePriceBody(body);
+          if (checked.issues.length) {
+            sendJson(response, 400, {
+              ok: false,
+              error: 'invalid',
+              issues: checked.issues.map((item) => ({
+                path: Array.isArray(item.path) ? item.path : [],
+                message: item.message,
+              })),
+            });
+            return;
+          }
+          try {
+            const result = writeLocalPrices(pricing.localPath, checked.models, checked.remove);
+            // Hot reload: no restart, no disable/enable. The next settlement
+            // prices with the saved table; history is not rewritten on purpose.
+            const info = refreshPriceBook();
+            ctx.logger?.info?.(
+              `[${PLUGIN_ID}] prices saved to ${info.localPath} ` +
+                `(${result.written} model(s) written, ${result.removed} removed)`,
+            );
+            sendJson(response, 200, {
+              ok: true,
+              applied: true,
+              written: result.written,
+              removed: result.removed,
+              localPath: info.localPath,
+              prices: pricePayload(pricing),
+            });
+          } catch (error) {
+            ctx.logger?.warn?.(`[${PLUGIN_ID}] could not save prices: ${String(error)}`);
+            sendJson(response, 500, {
+              ok: false,
+              error: 'write-failed',
+              message: String(error && error.message ? error.message : error),
+            });
+          }
+        },
+      });
       const configGetRoute = webCtx.webServer.register({
         kind: 'exact',
         path: CONFIG_PATH,
@@ -2882,6 +3253,8 @@ export function apply(ctx, config) {
       return () => {
         getRoute();
         postRoute();
+        pricesGetRoute();
+        pricesPostRoute();
         configGetRoute();
         configPostRoute();
       };

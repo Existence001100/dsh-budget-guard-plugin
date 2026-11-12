@@ -218,6 +218,21 @@ function receipt(overrides = {}) {
   assert.equal(isPeak(Number.NaN, NO_HOLIDAYS), null);
 }
 
+// ── a new model with only peak prices gets the documented 50% offpeak ─────
+{
+  const merged = mergePriceBooks(DEFAULT_PRICE_BOOK, {
+    models: { 'gpt-4o-local': { peak: { input_miss: 3, input_hit: 0.3, output: 12 } } },
+  });
+  const finalized = finalizePriceBook(merged);
+  const price = finalized.book.models['gpt-4o-local'];
+  assert.deepEqual(price.peak, { input_miss: 3, input_hit: 0.3, output: 12 });
+  assert.deepEqual(
+    price.offpeak,
+    { input_miss: 1.5, input_hit: 0.15, output: 6 },
+    'a brand-new model must not get 0 off-peak prices (night turns would be free)',
+  );
+}
+
 // ── the shipped JSON is valid and carries the official flash prices ───────
 {
   const official = JSON.parse(readFileSync(new URL('../prices/official-prices.json', import.meta.url), 'utf8'));

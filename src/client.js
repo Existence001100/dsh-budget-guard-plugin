@@ -175,6 +175,34 @@ window.__ModuleLoader__.load({
       return { ok: response.ok && body && body.ok === true, status: response.status, body };
     }
 
+    // The settings page edits unit prices, not the packaged price files: the
+    // Host merges this overlay over the built-in/official tables and keeps the
+    // result in memory, so a save is live on the next settlement.
+    async function fetchPrices() {
+      const response = await fetch('/dsh-budget/prices', {
+        headers: { accept: 'application/json' },
+        cache: 'no-store',
+      });
+      if (!response.ok) throw new Error('budget prices HTTP ' + response.status);
+      const body = await response.json();
+      return body && body.ok ? body.prices : null;
+    }
+
+    async function savePrices(payload) {
+      const response = await fetch('/dsh-budget/prices/save', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      let body = null;
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+      return { ok: response.ok && body && body.ok === true, status: response.status, body };
+    }
+
     function useBudgetState(sessionId) {
       const [state, setState] = useState(null);
       const [tick, setTick] = useState(0);
@@ -342,6 +370,20 @@ window.__ModuleLoader__.load({
       return recentBurnLine(estimate);
     }
 
+    /**
+     * Progress label shared by the turn card and the right-column page.
+     *
+     * A session with no budget has no percentage to show: printing "预算已用约
+     * 0%" after a million tokens reads as "you have used none of your budget".
+     * The bar is zero-width and the label says there is no budget instead, which
+     * is the same state as never having configured one.
+     */
+    function progressLabel(state, planned, percent) {
+      if (planned) return '已完成约 ' + percent + '%';
+      if (state && state.configured) return '预算已用约 ' + percent + '%';
+      return '未设置预算 · 仅记录金额';
+    }
+
     function holidayLabel(source) {
       return source === 'config' ? '配置' : source === 'none' ? '无' : '内置';
     }
@@ -506,7 +548,7 @@ window.__ModuleLoader__.load({
           ),
         );
       }
-      if (state.manual && state.manual.suppressed) {
+      if (state.configured && state.manual && state.manual.suppressed) {
         rows.push(
           h(DetailRow, {
             key: 'suppressed',
@@ -791,7 +833,7 @@ window.__ModuleLoader__.load({
         : '未设置预算 · 已用 ' + staleMark + state.used.costLabel + shadowNote) +
         staleNote +
         (guard.disabled ? ' · 已解除限制' : '') +
-        (state.manual && state.manual.suppressed ? ' · 已关闭提示' : '') +
+        (state.configured && state.manual && state.manual.suppressed ? ' · 已关闭提示' : '') +
         (pricing.unknownTokens > 0 ? ' · 价格未知' : '');
 
       const pillColor = level ? color : TOKENS.tertiary;
@@ -955,8 +997,8 @@ window.__ModuleLoader__.load({
       const color = levelColor(level);
       const planned = !!(estimate && estimate.source === 'model_plan' && estimate.remainingSteps !== null);
       const percent = estimate
-        ? Math.max(0, Math.min(100, estimate.progressPercent || 0))
-        : Math.max(0, Math.min(100, (state.used && state.used.percent) || 0));
+        ? (planned || state.configured ? Math.max(0, Math.min(100, estimate.progressPercent || 0)) : 0)
+        : (state.configured ? Math.max(0, Math.min(100, (state.used && state.used.percent) || 0)) : 0);
 
       return h(
         'div',
@@ -987,7 +1029,7 @@ window.__ModuleLoader__.load({
           h('span', { style: { flex: 1, minWidth: 60, height: 4, borderRadius: 999, background: TOKENS.bgSoft, overflow: 'hidden' } },
             h('span', { style: { display: 'block', width: percent + '%', height: '100%', background: level ? color : TOKENS.brand } }),
           ),
-          h('span', { style: { color: TOKENS.secondary } }, (planned ? '已完成约 ' : '预算已用约 ') + percent + '%'),
+          h('span', { style: { color: TOKENS.secondary } }, progressLabel(state, planned, percent)),
         ),
         h(
           'div',
@@ -1042,8 +1084,10 @@ window.__ModuleLoader__.load({
 
       const level = state.warning ? state.warning.level : null;
       const color = levelColor(level);
-      const percent = Math.max(0, Math.min(100, estimate.progressPercent || 0));
       const planned = estimate.source === 'model_plan' && estimate.remainingSteps !== null;
+      const percent = planned || state.configured
+        ? Math.max(0, Math.min(100, estimate.progressPercent || 0))
+        : 0;
 
       return h(
         'div',
@@ -1069,7 +1113,7 @@ window.__ModuleLoader__.load({
           h('span', { style: { flex: 1, minWidth: 80, height: 4, borderRadius: 999, background: TOKENS.bgSoft, overflow: 'hidden' } },
             h('span', { style: { display: 'block', width: percent + '%', height: '100%', background: level ? color : TOKENS.brand } }),
           ),
-          h('span', { style: { color: TOKENS.secondary } }, (planned ? '已完成约 ' : '预算已用约 ') + percent + '%'),
+          h('span', { style: { color: TOKENS.secondary } }, progressLabel(state, planned, percent)),
         ),
         h(
           'div',
@@ -1188,6 +1232,483 @@ window.__ModuleLoader__.load({
       const parsed = numberFrom(value, fallback);
       const ratio = parsed > 1 ? parsed / 100 : parsed;
       return Math.min(1, Math.max(0, Math.round(ratio * 1000) / 1000));
+    }
+
+    /* ── model price settings ─────────────────────────────────────────── */
+
+    // One row per model, two tiers, three unit prices. Everything is 元 / 1M
+    // tokens; `input_hit` is the cache-hit price and cache writes are billed as
+    // `input_miss`, so there is no fourth field to edit.
+    const PRICE_TIERS = [
+      ['peak', '高峰'],
+      ['offpeak', '空闲'],
+    ];
+    const PRICE_FIELDS = [
+      ['input_miss', '未命中'],
+      ['input_hit', '命中'],
+      ['output', '输出'],
+    ];
+    const NEW_MODEL_KEY = '__new__';
+    const PRICE_NAME_WIDTH = 150;
+    const PRICE_CELL_WIDTH = 56;
+    const PRICE_ACTION_WIDTH = 96;
+
+    function priceOriginLabel(origin) {
+      if (origin === 'local') return '用户自定义';
+      if (origin === 'official') return 'official';
+      return '内置';
+    }
+
+    function priceNumber(value) {
+      if (value === '' || value === null || value === undefined) return '—';
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) return '—';
+      return String(Math.round(parsed * 1000000) / 1000000);
+    }
+
+    /** Displayed values as editable strings; blank means "inherit the lower layer". */
+    function blankPriceEntry(row) {
+      const entry = { peak: {}, offpeak: {} };
+      for (const [tierName] of PRICE_TIERS) {
+        for (const [field] of PRICE_FIELDS) {
+          const value = row && row[tierName] ? row[tierName][field] : undefined;
+          entry[tierName][field] = typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+        }
+      }
+      return entry;
+    }
+
+    /**
+     * The exact body `POST /dsh-budget/prices/save` receives. Only non-blank,
+     * finite, non-negative values are sent, so clearing a field keeps
+     * inheriting the layer below instead of pinning a zero. `remove` is the list
+     * of custom models to drop from local-prices.json (restoring defaults).
+     */
+    function buildPricePayload(draft, removing, newModel) {
+      const models = {};
+      const put = (model, entry) => {
+        if (!model || !entry) return;
+        const out = {};
+        for (const [tierName] of PRICE_TIERS) {
+          const source = entry[tierName] || {};
+          const tierOut = {};
+          for (const [field] of PRICE_FIELDS) {
+            const raw = source[field];
+            if (raw === '' || raw === null || raw === undefined) continue;
+            const value = Number(raw);
+            if (!Number.isFinite(value) || value < 0) continue;
+            tierOut[field] = value;
+          }
+          if (Object.keys(tierOut).length) out[tierName] = tierOut;
+        }
+        if (Object.keys(out).length) models[model] = out;
+      };
+      for (const [model, entry] of Object.entries(draft || {})) {
+        if (model === NEW_MODEL_KEY) continue;
+        put(model, entry);
+      }
+      if (newModel && newModel.name) put(String(newModel.name).trim(), newModel.entry);
+      return { models, remove: Array.isArray(removing) ? removing.slice() : [] };
+    }
+
+    function priceGridStyle() {
+      return {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '5px 0',
+        borderBottom: '1px solid ' + TOKENS.border,
+        whiteSpace: 'nowrap',
+      };
+    }
+
+    function priceTierCells(tierName, entry, editable, model, onChange) {
+      return h(
+        'span',
+        { key: tierName, style: { display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 } },
+        h('span', { style: { width: 32, color: TOKENS.secondary, fontSize: 10 } }, tierName === 'peak' ? '高峰' : '空闲'),
+        ...PRICE_FIELDS.map(([field, label]) => {
+          const key = tierName + '.' + field;
+          const value = entry && entry[field] !== undefined ? entry[field] : '';
+          if (!editable) {
+            return h(
+              'span',
+              {
+                key,
+                title: label,
+                style: {
+                  width: PRICE_CELL_WIDTH,
+                  textAlign: 'right',
+                  fontVariantNumeric: 'tabular-nums',
+                  fontSize: 11,
+                },
+              },
+              priceNumber(value),
+            );
+          }
+          return h('input', {
+            key,
+            type: 'number',
+            min: 0,
+            step: 'any',
+            'aria-label': model + ' ' + (tierName === 'peak' ? '高峰 ' : '空闲 ') + label,
+            value: String(value),
+            onChange: (event) => onChange(model, tierName, field, event.target.value),
+            style: { ...inputStyle(PRICE_CELL_WIDTH), padding: '1px 4px', fontSize: 11, textAlign: 'right' },
+          });
+        }),
+      );
+    }
+
+    /** Presentational table. Kept separate from the fetching section so the
+     *  shape of the edit boxes is directly testable with a fixture. */
+    function PriceTable(props) {
+      const data = props.data || { models: [] };
+      const rows = Array.isArray(data.models) ? data.models : [];
+      const draft = props.draft || {};
+      const removing = Array.isArray(props.removing) ? props.removing : [];
+      const editing = props.editing || null;
+      const adding = !!props.adding;
+      const busy = !!props.busy;
+
+      const valuesOf = (model, row) => draft[model] || blankPriceEntry(row);
+
+      const actionButton = (label, onClick, title, color) =>
+        h(
+          'button',
+          {
+            type: 'button',
+            onClick,
+            title,
+            disabled: busy,
+            style: {
+              ...linkButtonStyle(),
+              color: color || TOKENS.brand,
+              padding: '1px 4px',
+              flexShrink: 0,
+            },
+          },
+          label,
+        );
+
+      const actionsOf = (row) => {
+        const model = row.model;
+        const marked = removing.indexOf(model) >= 0;
+        if (marked) {
+          return h(
+            'span',
+            { style: { width: PRICE_ACTION_WIDTH, display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' } },
+            h('span', { style: { color: TOKENS.error, fontSize: 10 } }, '待删除'),
+            actionButton('撤销', () => props.onToggleRemove(model), '取消删除', TOKENS.secondary),
+          );
+        }
+        const isEditing = editing === model;
+        return h(
+          'span',
+          { style: { width: PRICE_ACTION_WIDTH, display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' } },
+          isEditing
+            ? actionButton('取消', () => props.onCancelEdit(model), '放弃这一行的修改', TOKENS.secondary)
+            : actionButton('编辑', () => props.onEdit(model), '修改这个模型的单价'),
+          row.custom
+            ? actionButton('删除', () => props.onToggleRemove(model), '从 local-prices.json 中移除，回退到默认价', TOKENS.error)
+            : null,
+        );
+      };
+
+      const rowOf = (row) => {
+        const model = row.model;
+        const isEditing = editing === model;
+        const entry = isEditing ? valuesOf(model, row) : row;
+        const marked = removing.indexOf(model) >= 0;
+        return h(
+          'div',
+          { key: 'row-' + model, style: priceGridStyle() },
+          h(
+            'div',
+            { style: { width: PRICE_NAME_WIDTH, minWidth: 0, flexShrink: 0 } },
+            h(
+              'div',
+              { style: { fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis' } },
+              model,
+            ),
+            h(
+              'div',
+              { style: { fontSize: 10, color: marked ? TOKENS.error : TOKENS.secondary } },
+              priceOriginLabel(row.origin) + (draft[model] && !marked ? ' · 未保存' : ''),
+            ),
+          ),
+          ...PRICE_TIERS.map(([tierName]) =>
+            priceTierCells(tierName, entry ? entry[tierName] : null, isEditing, model, props.onChange),
+          ),
+          actionsOf(row),
+        );
+      };
+
+      const newRow = () => {
+        const entry = draft[NEW_MODEL_KEY] || blankPriceEntry(null);
+        return h(
+          'div',
+          { key: 'row-new', style: { ...priceGridStyle(), background: TOKENS.bgSoft, borderRadius: TOKENS.radiusSm, padding: '5px 6px' } },
+          h(
+            'div',
+            { style: { width: PRICE_NAME_WIDTH, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 2 } },
+            h('input', {
+              type: 'text',
+              placeholder: '例如 gpt-4o',
+              'aria-label': '新模型名称',
+              value: String(props.newName || ''),
+              onChange: (event) => props.onNewName(event.target.value),
+              style: { ...inputStyle(PRICE_NAME_WIDTH - 4), padding: '2px 4px', fontSize: 11 },
+            }),
+            h('div', { style: { fontSize: 10, color: TOKENS.secondary } }, '新模型 · 待保存'),
+          ),
+          ...PRICE_TIERS.map(([tierName]) =>
+            priceTierCells(tierName, entry[tierName], true, NEW_MODEL_KEY, props.onChange),
+          ),
+          h(
+            'span',
+            { style: { width: PRICE_ACTION_WIDTH, display: 'flex', gap: 6, flexShrink: 0 } },
+            actionButton('取消', () => props.onCancelAdd(), '不添加这个模型', TOKENS.secondary),
+          ),
+        );
+      };
+
+      return h(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', minWidth: 0 } },
+        h(
+          'div',
+          { style: { color: TOKENS.secondary, fontSize: 11, margin: '4px 0 6px' } },
+          '单位：元 / 1M tokens。表格显示的是内置价、official 与本地自定义合并后的生效价；' +
+            '保存写入 ' + (data.localPath || '$DSH_HOME/budget-guard/local-prices.json') +
+            '，下一轮对话即按新价计费。',
+        ),
+        h(
+          'div',
+          { style: { overflowX: 'auto', paddingBottom: 2 } },
+          h(
+            'div',
+            { style: { ...priceGridStyle(), color: TOKENS.secondary, fontSize: 10 } },
+            h('span', { style: { width: PRICE_NAME_WIDTH, flexShrink: 0 } }, '模型'),
+            ...PRICE_TIERS.map(([tierName, tierLabel]) =>
+              h(
+                'span',
+                { key: 'head-' + tierName, style: { display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 } },
+                h('span', { style: { width: 32 } }, tierLabel),
+                ...PRICE_FIELDS.map(([field, label]) =>
+                  h(
+                    'span',
+                    { key: 'head-' + tierName + '.' + field, style: { width: PRICE_CELL_WIDTH, textAlign: 'right' } },
+                    label,
+                  ),
+                ),
+              ),
+            ),
+            h('span', { style: { width: PRICE_ACTION_WIDTH, flexShrink: 0 } }, '操作'),
+          ),
+          adding ? newRow() : null,
+          ...rows.map(rowOf),
+        ),
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' } },
+          h(
+            'button',
+            { type: 'button', onClick: props.onSave, disabled: busy, style: primaryButtonStyle(busy) },
+            props.busy === 'save' ? '保存中…' : '保存价格',
+          ),
+          h(
+            'button',
+            { type: 'button', onClick: props.onStartAdd, disabled: busy || adding, style: primaryButtonStyle(busy) },
+            '添加新模型',
+          ),
+          props.message
+            ? h(
+                'span',
+                {
+                  style: {
+                    color: String(props.message).startsWith('价格已更新') ? TOKENS.success : TOKENS.error,
+                    fontSize: 11,
+                  },
+                },
+                props.message,
+              )
+            : null,
+        ),
+        Array.isArray(data.warnings) && data.warnings.length
+          ? h(
+              'details',
+              { style: { marginTop: 6, color: TOKENS.warn, fontSize: 10 } },
+              h('summary', { style: { cursor: 'pointer' } }, '价格表提示 ' + data.warnings.length + ' 条'),
+              h(
+                'div',
+                { style: { marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 } },
+                ...data.warnings.map((warning, index) => h('div', { key: 'pw-' + index }, String(warning))),
+              ),
+            )
+          : null,
+      );
+    }
+
+    /**
+     * Data half of the price editor: fetch the merged table once, then keep a
+     * local draft of edited rows and a list of rows marked for deletion. Nothing
+     * is written until 「保存价格」.
+     */
+    function PriceSection() {
+      const [data, setData] = useState(null);
+      const [draft, setDraft] = useState({});
+      const [removing, setRemoving] = useState([]);
+      const [editing, setEditing] = useState(null);
+      const [adding, setAdding] = useState(false);
+      const [newName, setNewName] = useState('');
+      const [busy, setBusy] = useState(null);
+      const [message, setMessage] = useState(null);
+      const [tick, setTick] = useState(0);
+      const [error, setError] = useState(null);
+
+      useEffect(() => {
+        let alive = true;
+        fetchPrices()
+          .then((next) => {
+            if (!alive) return;
+            if (next) {
+              setData(next);
+              setError(null);
+            } else {
+              setError('价格接口返回了空数据');
+            }
+          })
+          .catch(() => {
+            // A 404 here means the Host half is older than the Client half
+            // (e.g. only the client bundle was refreshed): say so instead of
+            // spinning on "loading" forever.
+            if (alive) setError('读取模型价格失败：Host 可能不支持 /dsh-budget/prices（请确认插件已完整更新）');
+          });
+        return () => {
+          alive = false;
+        };
+      }, [tick]);
+
+      if (!data) {
+        return h(
+          'div',
+          { style: { color: error ? TOKENS.error : TOKENS.secondary, fontSize: 11, padding: '4px 0' } },
+          error || '正在读取模型价格…',
+        );
+      }
+
+      const rowOf = (model) => (data.models || []).find((item) => item.model === model);
+
+      const startEdit = (model) => {
+        setDraft({ ...draft, [model]: blankPriceEntry(rowOf(model)) });
+        setEditing(model);
+        setMessage(null);
+      };
+
+      const changePrice = (model, tierName, field, value) => {
+        const current = draft[model] || blankPriceEntry(rowOf(model));
+        setDraft({
+          ...draft,
+          [model]: { ...current, [tierName]: { ...(current[tierName] || {}), [field]: value } },
+        });
+      };
+
+      const cancelEdit = () => {
+        setEditing(null);
+        setMessage(null);
+      };
+
+      const toggleRemove = (model) => {
+        setRemoving(
+          removing.indexOf(model) >= 0 ? removing.filter((item) => item !== model) : [...removing, model],
+        );
+        setMessage(null);
+      };
+
+      const startAdd = () => {
+        setDraft({ ...draft, [NEW_MODEL_KEY]: blankPriceEntry(null) });
+        setAdding(true);
+        setEditing(null);
+        setNewName('');
+        setMessage(null);
+      };
+
+      const cancelAdd = () => {
+        const next = { ...draft };
+        delete next[NEW_MODEL_KEY];
+        setDraft(next);
+        setAdding(false);
+        setNewName('');
+      };
+
+      const save = () => {
+        if (adding && !String(newName || '').trim()) {
+          setMessage('请先填写新模型的名称');
+          return;
+        }
+        const payload = buildPricePayload(
+          draft,
+          removing,
+          adding ? { name: newName, entry: draft[NEW_MODEL_KEY] } : null,
+        );
+        if (!Object.keys(payload.models).length && !payload.remove.length) {
+          setMessage('没有需要保存的改动');
+          return;
+        }
+        setBusy('save');
+        setMessage(null);
+        savePrices(payload)
+          .then((result) => {
+            if (!result.ok) {
+              const body = result.body || {};
+              const issues = Array.isArray(body.issues) ? body.issues : [];
+              if (issues.length) {
+                const first = issues[0] || {};
+                const where = Array.isArray(first.path) && first.path.length ? first.path.join('.') + '：' : '';
+                setMessage('保存失败 · ' + where + (first.message || '未知原因'));
+                return;
+              }
+              if (result.status === 403 || body.error === 'origin') {
+                setMessage('保存失败：模型价格只允许在本机浏览器中修改（参见「访问」一节的仅本机可改设置）。');
+                return;
+              }
+              setMessage('保存失败' + (body.error ? '：' + body.error : ''));
+              return;
+            }
+            setDraft({});
+            setRemoving([]);
+            setEditing(null);
+            setAdding(false);
+            setNewName('');
+            if (result.body && result.body.prices) setData(result.body.prices);
+            else setTick(tick + 1);
+            setMessage(
+              '价格已更新并生效。注意：历史账目不会自动重算，如需按新价重算本会话，请执行 /budget reset-snapshot',
+            );
+          })
+          .catch(() => setMessage('保存价格失败'))
+          .finally(() => setBusy(null));
+      };
+
+      return h(PriceTable, {
+        data,
+        draft,
+        editing,
+        removing,
+        adding,
+        newName,
+        busy,
+        message,
+        onEdit: startEdit,
+        onCancelEdit: cancelEdit,
+        onChange: changePrice,
+        onToggleRemove: toggleRemove,
+        onStartAdd: startAdd,
+        onCancelAdd: cancelAdd,
+        onNewName: setNewName,
+        onSave: save,
+      });
     }
 
     function SettingsPage() {
@@ -1417,6 +1938,7 @@ window.__ModuleLoader__.load({
               type: 'number',
               min: 0,
               step: '0.01',
+              'aria-label': '默认金额',
               value: String(valueOf('budgetAmount')),
               onChange: (event) => setField('budgetAmount', event.target.value),
               placeholder: '0',
@@ -1431,6 +1953,7 @@ window.__ModuleLoader__.load({
               type: 'number',
               min: 0,
               step: '1000',
+              'aria-label': '默认 Token',
               value: String(valueOf('tokenBudget')),
               onChange: (event) => setField('tokenBudget', event.target.value),
               placeholder: '0',
@@ -1517,6 +2040,12 @@ window.__ModuleLoader__.load({
               )
             : null,
         ),
+        sectionTitle('模型价格'),
+        // Its own save button and its own file: unit prices live in
+        // $DSH_HOME/budget-guard/local-prices.json, not in the bundled
+        // `prices/` directory, and saving them must not touch Config.
+        h(PriceSection),
+
         h(
           'div',
           { style: { marginTop: 10, color: TOKENS.secondary, fontSize: 10 } },
@@ -1536,6 +2065,10 @@ window.__ModuleLoader__.load({
       // Exposed for the coverage test: form controls + the keys that need YAML.
       settingsKeys: SETTINGS_KEYS,
       excludedKeys: FORM_EXCLUDED_KEYS,
+      // Exposed for the price-table test: the presentational table and the
+      // exact body a save would post.
+      priceTable: PriceTable,
+      pricePayload: buildPricePayload,
       apply(ctx) {
         ctx.slots.inject('conversation.chat.turnTail', () =>
           ctx.slots.register(

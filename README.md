@@ -4,7 +4,7 @@
 
 # 🏦 dsh-budget-guard-plugin
 
-**给 DSH 的每一次任务加一条预算线：支持实时核算、自动拦截与预估降级。**
+**给 DSH 的每一次任务加一条预算线：支持实时核算、自动拦截、预估降级。支持在设置页 UI 中查看、修改或新增模型及模型单价。**
 
 <a href="./README.en.md">English</a> · <strong>简体中文</strong>
 
@@ -17,7 +17,7 @@
 
 </div>
 
-给 DSH（DeepSeek Harness）的每一次任务加一条预算线：按 **人民币金额** 或 **Token 数量** 限制消耗，接近上限时预警，达到阈值时自动中止（`auto`）或询问你“继续 / 中止”（`manual`），并在**每轮结束后**估算还需多少步、还要花多少钱。
+给 DSH（DeepSeek Harness）的每一次任务加一条预算线：按 **人民币金额** 或 **Token 数量** 限制消耗，接近上限时预警，达到阈值时自动中止（`auto`）或询问你“继续 / 中止”（`manual`），并在**每轮结束后**估算还需多少步、还要花多少钱。支持设置页 UI 中查看、修改或新增模型及模型单价。
 
 **🚀 快速安装**
 
@@ -36,6 +36,7 @@ dsh plugin --profile web add dsh-budget-guard-plugin
 - [快速开始](#快速开始)
 - [兼容性](#兼容性)
 - [设置预算](#设置预算)
+  - [模型及价格设置（设置页底部）](#模型及价格设置设置页底部)
 - [配置项](#配置项)
 - [高峰 / 空闲计价](#高峰--空闲计价)
 - [怎么核对金额（和官网账单对不上时）](#怎么核对金额和官网账单对不上时)
@@ -60,6 +61,7 @@ dsh plugin --profile web add dsh-budget-guard-plugin
 | --- | --- | --- |
 | 🚦 | 预算声明 | 插件 Config（全局默认）或对话里的 `/budget` 命令（仅当前会话） |
 | 💸 | 实时核算 | 从会话日志的 `assistant/message.usage` 累计 input/output/cache Token；每条消息按它**实际发生时刻**的北京高峰/空闲价计费 |
+| 💰 | 价格自定义 | 无需折腾 JSON 文件，直接在设置页 UI 中查看、修改或新增模型单价（完美适配官方调价或 One API 代理），保存后立即热更新生效 |
 | 🛑 | 自动拦截 | `agent/turn-stopping` 达到 `interceptRatio` 时调用 `agent.cancel({ kind: 'hook' })`；`agent/pre-step` 在超预算时拒绝下一步，避免继续产生模型调用 |
 | ✋ | 手动拦截 | `manual` 模式只提示，不自动取消；composer 下方的预算条出现「继续 / 中止」按钮 |
 | ⚠️ | 预警 | 达到 `warnRatio`（默认 80%）在预算条与每轮卡片上显示醒目提示 |
@@ -148,7 +150,7 @@ dsh plugin --profile web add .
 | 组件 | 支持或持续验证范围 |
 | --- | --- |
 | DeepSeek Harness | `0.2.0` 及以上版本。持续跟进 DSH 宿主 API 变更。 |
-| Node.js | `>=22.13` |
+| Node.js | `^22.13.0` 与 `>=24.0.0` |
 | pnpm | 最新版，配合 `dsh plugin` 使用 |
 | 操作系统 | Windows / macOS / Linux |
 
@@ -169,10 +171,13 @@ dsh plugin --profile web add .
 /budget unlock           # 解除本会话的预算拦截（费用仍统计，但不再中止/拦截）
 /budget lock             # 恢复本会话的预算拦截
 /budget off              # 清除会话覆盖，回到 Config 默认值（同时恢复拦截）
+/budget 0                # 同 /budget off；/budget both 0 0 也一样
 /budget reset-snapshot   # 丢弃本会话的缓存与快照条目，按会话日志重新计费（排障用）
 ```
 
-**预算为 0（未设置）时不会拦截。** `budgetAmount` 与 `tokenBudget` 默认都是 `0`，含义是“这条线不存在”：不会取消轮次、不会在 `pre-step` 拒绝、也不会弹“是否继续”。只有金额或 Token 任一 > 0 才启用阈值判定。你没设预算就会被拦，是 bug 而不是设计——有回归测试钉住（花掉几十万 token 也不 cancel / reject）。
+**预算为 0（未设置）时不会拦截。** `budgetAmount` 与 `tokenBudget` 默认都是 `0`，含义是“这条线不存在”：不会取消轮次、不会在 `pre-step` 拒绝、不会触发 `warnRatio` 预警、也不会弹“是否继续”。只有金额或 Token 任一 > 0 才启用阈值判定。`/budget 0` 与 `/budget both 0 0` 等价于 `/budget off`：清除会话覆盖，回到 Config 默认值；如果默认值也是 0，本会话彻底无限制。你没设预算就会被拦，是 bug 而不是设计——有回归测试钉住（花掉几十万 token 也不 cancel / reject）。
+
+没有预算时 UI 也一致：预算条显示 `未设置预算 · 已用 ¥…`，估算卡片/右侧栏显示「未设置预算 · 仅记录金额」而不是伪造的「预算已用约 0%」，进度条为空，不出现任何手动放行按钮；`/budget continue`、`/budget suppress` 在没有预算时是无操作并给出提示（不会提前记下放行额度或“已关闭提示”）。
 
 `/budget reset-snapshot` 用于“明细无法回滚导致结算被拒绝”的排障：
 
@@ -202,6 +207,7 @@ dsh plugin --profile web add .
 | 默认预算 | 默认金额、默认 Token、币种 |
 | 快照 | 冷启动快照开关、保留会话数、非活跃保留天数、明细保留轮数、每会话结算记录上限（`snapshotPath` 不在此处，见下） |
 | 访问 | 仅本机可改设置（`requireLocalControl`）、仅本机可操作本轮（`requireLocalAction`） |
+| 模型价格 | 查看当前生效的所有模型单价、新增自定义模型、覆盖内置/official 价格并实时热更新（保存至 `local-prices.json`） |
 
 **4 个键不在表单里**，只能手改 `cordis.patch.yml`：`snapshotPath`（自由路径）、`allowedOrigins`（数组）、`holidays`（日期数组）、`useBuiltinHolidays`（与 `holidays` 联动的开关）。测试会断言「表单键 + 这 4 个 == `DEFAULTS` 的全部键」，所以新增 Config 键时漏加控件会直接测试失败。
 
@@ -210,6 +216,19 @@ dsh plugin --profile web add .
 点「保存全部设置」后走 `POST /dsh-budget/config/save`：Host 把补丁合并进当前 Config，再用**与插件加载完全相同的校验器**校验整体，因此跨字段规则（`warnRatio ≤ interceptRatio`、放行上限必须低于硬停线）会在这里就被拒绝，并返回具体原因；未知键直接 400。写回的是当前 bundle 行的 `config`，与手工编辑 `cordis.patch.yml` 等价。
 
 > 0.3.10 修复：设置页曾把已经是比例的 `warnRatio: 0.8` 再除以 100 变成 `0.008`，导致「保存全部设置」每次都被 Host 以 `warnRatio must be ... between 0.01 and 1` 拒绝。现在提交的仍是 `0.8 / 0.95 / 0.2`。
+
+### 模型及价格设置（设置页底部）
+
+在设置页的最下方，提供了一个直观的「模型价格」编辑器。你可以直接在 UI 中以表格形式查看、新增或修改各个模型的高峰/空闲单价（完美适配官方调价或 One API 等三方代理）。修改保存后会立即热更新生效，无需手动去改 JSON 文件。
+
+- 表格列出**合并后实际生效**的全部模型，按「高峰 / 空闲」两行展示 `未命中 / 命中 / 输出` 三个单价，单位统一为 **元 / 1M tokens**；
+- 每行右侧标注价格来源：`内置` / `official` / `用户自定义`（local），鼠标停在数字上能看到字段名；
+- 「编辑」把该行的 6 个单价变成输入框（清空某项表示继续继承下一层价格，不会被写成 0），「添加新模型」可手动输入模型名（如 `gpt-4o`，要和 `message.source.model` 完全一致）；
+- 「保存价格」调用 `POST /dsh-budget/prices/save`，把改动**只写入 `$DSH_HOME/budget-guard/local-prices.json`**，然后 Host 重新执行 `finalizePriceBook`，**下一轮对话立即按新价计费**，不需要重启 DSH；
+- 用户自定义的模型有「删除」按钮：从 `local-prices.json` 中移除，回退到 official / 内置价（如果两层都没有，则变回“未定价模型”）；
+- 保存成功后的提示固定为：**「价格已更新并生效。注意：历史账目不会自动重算，如需按新价重算本会话，请执行 `/budget reset-snapshot`」**。
+
+> 价格与 Config 是两套保存路径：改单价点「保存价格」，改预算/拦截参数点「保存全部设置」，互不影响。
 
 ```yaml
 - id: budget-guard
@@ -284,8 +303,10 @@ dsh plugin --profile web add .
 
 > 0.4.0 修正：`output` 回到官方标价 **`8`（高峰）、`4`（空闲 50%）**；输入未命中 `2 / 1`、缓存命中 `0.04 / 0.02`（DeepSeek 官方调价后）。同时删除了独立的缓存写入计价项：缓存写入 token 已包含在 `input_miss` 中，按未命中价计费。
 
-- 优先级：代码内置默认 → [prices/official-prices.json](prices/official-prices.json) → `prices/local-prices.json`。把 [prices/local-prices.example.json](prices/local-prices.example.json) 复制为 `prices/local-prices.json` 即可覆盖任意字段。
-- 仓库里的 `official-prices.json` 是**保守示例值**（插件不允许联网拉价）；上线前请用 `local-prices.json` 覆盖为你实际账单上的官方单价。修改价格文件后禁用/启用一次插件即可生效。
+- 优先级：代码内置默认 → [prices/official-prices.json](prices/official-prices.json) → `prices/local-prices.json`（插件目录，旧位置，仍兼容） → **`$DSH_HOME/budget-guard/local-prices.json`（设置页写入，优先级最高）**。
+- **推荐用设置页改价**（设置 → 预算护栏 → 模型价格），它只写 `$DSH_HOME/budget-guard/local-prices.json`，不碰 npm 包目录，保存后**热更新立即生效**，不需要禁用/启用插件。手工改文件仍然可行：把 [prices/local-prices.example.json](prices/local-prices.example.json) 复制为 `$DSH_HOME/budget-guard/local-prices.json`（或插件目录下的 `prices/local-prices.json`，后者在升级时会被覆盖）。
+- 仓库里的 `official-prices.json` 是**保守示例值**（插件不允许联网拉价）；上线前请用 `local-prices.json` 覆盖为你实际账单上的官方单价。
+- 改价只影响**之后的结算**：已结算的 charge 保留结算当时的单价（`/budget debug` 能看到），历史账目不会自动重算 —— 需要本会话按新价重算时执行 `/budget reset-snapshot`。
 - `offpeak` 缺失字段默认取 `peak × 50%`。价格表只有 `input_miss` / `input_hit` / `output` 三个字段；缓存写入没有单独单价。
 - 未知模型：token 计入 `unknownTokens`，**展示费用按真实已知计（未定价部分为 0）**，拦截判定另用 `shadowCost`；预算条与明细显示未知模型警示。
 - 内置节假日表是覆盖 2024–2026 的保守清单；请按官方安排通过 `holidays` 覆盖。
@@ -308,7 +329,7 @@ dsh plugin --profile web add .
 | 时段判定 | 工作日 `09–12`、`14–18` 高峰（2×），其余与周末/节假日按基准价；`/budget debug` 会标出当时的判定 |
 | 四舍五入 | 单项线性计算，合计保留 6 位小数后展示，对账差几厘属正常 |
 | 未定价模型 | 展示按真实已知（通常 0），拦截按“已加载价格表里的最高单价” |
-| 厂商调价 | 内置价是示例值；改 `prices/local-prices.json` 即可，无需改代码 |
+| 厂商调价 | 内置价是示例值；在设置页「模型价格」里改，或直接改 `$DSH_HOME/budget-guard/local-prices.json`，无需改代码 |
 
 ## 冷启动与快照
 
@@ -372,7 +393,7 @@ dsh plugin --profile web add .
 - 未定价 token 占比达到 `unknownWarnRatio`（默认 20%）时提示“未定价模型占 X% token，已按已加载价格表中的最高单价估算拦截，实际可能偏低”。
 - 预算条追加 `· 价格未知`，文字变黄并带 `⚠`。
 - `/budget prices` 打印已加载模型、价格来源、未定价模型清单和处理方式。
-- 补齐 `prices/local-prices.json` 后禁用/启用插件，标识自动消失。
+- 补齐方式：在设置页「模型价格」中添加该模型（写入 `$DSH_HOME/budget-guard/local-prices.json`，保存即生效），或直接编辑该文件的 `models`；旧位置 `prices/local-prices.json` 仍会被读取。
 - 未做“同厂商均价”兜底：那会制造另一个看似精确但不准确的金额；当前选择明确显示“价格未知”，并在拦截层使用最高已知单价保护。
 
 ## 父任务 / 子代理聚合
@@ -425,14 +446,16 @@ dsh plugin --profile web add .
 
 ## HTTP 路由
 
-- `/dsh-budget/state`、`/dsh-budget/action`、`/dsh-budget/config`、`/dsh-budget/config/save`。
+- `/dsh-budget/state`、`/dsh-budget/action`、`/dsh-budget/config`、`/dsh-budget/config/save`、`/dsh-budget/prices`、`/dsh-budget/prices/save`。
 - `/action` 的 `set-budget` 传 `amount: 0, tokens: 0` 等价于 `/budget off`：清除会话覆盖、回到 Config 默认预算（不需要 live agent）。
 - `/config` 返回**全部** Config 键，外加四个只读字段 `output`、`holidaysSource`、`priceSources`、`server`（见下节「只读字段」）。
 - `/config/save` 的键白名单直接来自 `DEFAULTS`：新增 Config 键自动可保存；未知键 400 `unknown-key`，越界/枚举错误/跨字段冲突统一 400 `invalid`，`issues` 是 `[{ path: ['字段'], message: '原因' }]` 数组，设置页会把 `path` + `message` 直接显示出来。
+- `/prices`（GET）返回**已合并 + finalize 后**的生效价格：`{ currency, unit, offpeakFactor, localPath, sources, warnings, models: [{ model, origin, custom, peak, offpeak }] }`，`origin` 为 `builtin` / `official` / `local`。读路由同源放行，远程 GUI 也能看到价格。
+- `/prices/save`（POST）接收 `{ models: { 模型名: { peak?, offpeak? } }, remove?: [模型名] }`，只把写出的字段合并进 `$DSH_HOME/budget-guard/local-prices.json`（写临时文件后 rename，不带 BOM），随后在内存里重新加载并 `finalizePriceBook`；返回 `{ ok, applied, written, removed, localPath, prices }`。校验失败返回 400 `invalid` + `issues`（路径形如 `['models', 'gpt-4o', 'peak', 'output']`），写盘失败返回 500 `write-failed`。**只允许 loopback**（与 `/config/save` 共用 `requireLocalControl`）。
 - **凭证机制（0.3.0）**：`Origin` 和 `Sec-Fetch-Site` 都是普通请求头，脚本可以随意伪造，所以它们**不是**凭证。真正起作用的是 TCP 对端地址。读与写分开：
   - `/config/save`（改全局预算）默认只接受 **loopback 对端**（`requireLocalControl`，默认 `true`）；
   - `/action`（继续 / 不再提示 / 中止 / 设置本次预算）默认同样只接受 loopback（`requireLocalAction`，默认 `true`），但它可以**单独关闭**：它只影响当前会话，风险低于改全局预算；
-  - 读路由（`/state`、`/config`）保持同源放行，远程 GUI 能正常看到数字；
+  - 读路由（`/state`、`/config`、`/prices`）保持同源放行，远程 GUI 能正常看到数字；
   - bind 地址通过 `webServer.getOrigin()` 读取并写入 `/config` 的 `server` 字段；**非 loopback 绑定时**连 `Sec-Fetch-Site` 兜底也取消，必须精确 `Origin`。
 - **远程 GUI 的 manual 工作流**（`TODO: 需确认` 的答案）：远程浏览器默认不能继续/中止（403）。两条可行路径：① 用 SSH 端口转发把 `127.0.0.1:56675` 映射到本地，请求源地址就是 loopback；② 在设置页「访问」里关闭 `requireLocalAction`，让 `/action` 接受同源远程请求（`/config/save` 仍受 `requireLocalControl` 保护，两者独立）。关闭后局域网内同源页面也能继续/中止当前会话，风险自负。
 - `Origin: null` 显式拒绝；`allowedOrigins` 通过 URL 规范化比较协议、主机和端口，精确匹配，不支持通配符。
@@ -496,7 +519,7 @@ dsh plugin --profile web add .
   - 打开时机：`estimateOutput=sidebar` 时每会话**自动打开一次**（`localStorage` 记录，7 天过期，多个标签页不会重复抢焦点）；`both` 时只在“模型计划外推会超预算”时自动打开——它不是常驻面板，想要常驻请选 `sidebar` 或点预算条明细里的「在右侧栏打开…」。
   - 历史均值可能低估或高估，但它不再被用来预测未来；预警仍会通过预算条变色与卡片提示。
 - **常驻预算条**（`conversation.composer.dock`）：与 Host 自己的 usage 行同高同字号。主行只显示 `未设置预算 · 已用 ¥37.07` 或 `预算 ¥2.00 · 已用 ¥1.15`；**有 `shadowCost` 时追加 `（判定 ¥1.50，含未知估算）`**，即真实值与拦截判定同时可见。冷启动快照显示 `≈…（待校正）`，未定价模型追加 `· 价格未知`，手动模式关闭提示后显示 `· 已关闭提示`。点击展开明细：分项费用、峰/谷费用、最近模型、当前时段、Token、未知模型、未知估算（仅用于拦截判断）、父任务/子代理聚合、结算健康度（`有 N 次结算被拒绝` / `M 条已结算 · lastSeq`）、价格来源，并可展开「设置本次预算」输入框。达到阈值时文字变色并出现 `⚠`；`manual` 模式提供「继续 (+10%)」「不再提示」「中止」。
-- **设置页**（`settings.section` → 预算护栏）：拦截 / 每轮预估 / 默认预算 / 快照 / 访问五组设置，见上文「方式三」；页脚显示价格来源、节假日来源、右侧栏可用性与绑定地址。
+- **设置页**（`settings.section` → 预算护栏）：涵盖拦截 / 每轮预估 / 默认预算 / 快照 / 访问五组核心设置。**底部还提供了直观的「模型价格」编辑器**，你可以直接在这里以表格形式增删改各个模型的高峰/空闲单价，保存后立即热更新生效。页脚显示价格来源、节假日来源、右侧栏可用性与绑定地址。
 - 所有 UI 使用 `--dsw-alias-*` 主题变量，跟随明暗主题。
 - 预算条与 Host 的 `activity` / `usage` 状态 pill 对齐：字体 `calc(var(--dsh-content-font-size-secondary, 13px) - 1px)`、行高 `calc(20px + var(--dsh-content-font-delta-secondary, 0px))`、颜色 `--dsw-alias-label-tertiary`、`padding: 1px 8px`、`border-radius: var(--dsw-radius-sm)`、`gap: 6px` 与 `tabular-nums`，不额外添加外边距；hover 背景使用 `--dsw-alias-interactive-bg-hover`。
 
@@ -537,7 +560,7 @@ node test/bom.test.mjs  # 全仓库 BOM 检查，含 lib/（运行时真正加�
 
 - 预算是**按会话**核算的；子代理是独立会话、独立预算。父/子**展示聚合**已提供（`aggregate`），但父任务统一限额需要 Host 暴露稳定 `taskId`，当前未做（`TODO: 需确认`）；`complete` 只代表已发现集合。
 - 冷启动先显示快照（标注 `待校正`）；若连快照都没有，显示“预算状态加载中…”，等 `agent/created` 或第一条事件后收敛。`/budget` 声明可从 `command/run` 重放。
-- 金额是估算，不替代账单；未定价模型**展示费用按真实已知计、拦截判定用 `shadowCost`**（已加载价格表里最贵模型的最贵时段价），主行同时显示真实值与判定值；请用 `prices/local-prices.json` 补齐。
+- 金额是估算，不替代账单；未定价模型**展示费用按真实已知计、拦截判定用 `shadowCost`**（已加载价格表里最贵模型的最贵时段价），主行同时显示真实值与判定值；请在设置页「模型价格」里补齐（写入 `$DSH_HOME/budget-guard/local-prices.json`）。
 - 时段判定使用 `assistant/message` 的 `event.time`（会话提交时刻），不是请求开始时刻；秒级时间戳自动归一为毫秒；不带时区的字符串按 Asia/Shanghai 解释且只 warn 一次；同一 step 的重试以最终结算替换（被截断的用摘要回滚），`Charge` 整体回滚，`counters.replacedSettlements` / `blockedSettlements` 持久化审计。
 - 手动模式「继续」每次放行约 10%，累计到 `maxGrantedPercent`（默认 30%，约 3 次）后只能中止；「不再提示」只关闭提示，达到 `manualHardStopRatio` 仍强制中止；`/budget off` 恢复 Config 默认预算（金额或 Token 任一非 0 都仍会拦截，文案会说明是哪一条）。
 - 快照按实例分文件（`<stem>.<pid>.<startedAt>.json`）并合并读取；`snapshotKeepTurns` 控制 `stepCharges` 明细保留轮数，更早的重试用 `settledCharges` 摘要替换（不再拒绝），只有超过 `perSessionMaxSettled` 的标记才降级为拒绝并计入 `blockedSettlements`；`snapshotMaxSessions` / `snapshotMaxAgeDays` 控制增长；stale writer 改为**合并写入**（磁盘为底 + 本进程独有结算），清理时按 `<pid>.<startTs>` 识别 pid 复用。

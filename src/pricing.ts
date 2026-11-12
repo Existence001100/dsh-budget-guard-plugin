@@ -281,10 +281,13 @@ export function mergePriceBooks(base: PriceBook, overlay: unknown): PriceBook {
   for (const [model, raw] of Object.entries(models as Record<string, unknown>)) {
     if (!raw || typeof raw !== 'object') continue;
     const entry = raw as Record<string, unknown>;
-    const current = result.models[model] || {
-      peak: { input_miss: 0, input_hit: 0, output: 0 },
-      offpeak: { input_miss: 0, input_hit: 0, output: 0 },
-    };
+    // A model introduced by this overlay starts with *absent* fields, not
+    // zeros: `finalizePriceBook` is the only place allowed to decide what a
+    // missing price means (0 for peak, 50% of peak for offpeak). Seeding zeros
+    // here would make `finalizePriceBook` treat them as explicit prices, so a
+    // peak-only model added through the settings page silently billed every
+    // off-peak turn at 0.
+    const current = result.models[model] || ({ peak: {}, offpeak: {} } as ModelPrice);
     result.models[model] = {
       peak: { ...current.peak, ...tierFrom(entry.peak) },
       offpeak: { ...current.offpeak, ...tierFrom(entry.offpeak) },

@@ -320,6 +320,49 @@ assert.equal(dock.type, 'div');
 assert.match(text(dock), /判定 ¥1\.50/, 'main line must show effective judgement with shadow');
 assert.match(text(dock), /含未知估算/);
 
+// All-zero budget behaves as "unset": no warning, no manual controls.
+{
+  const previous = globalThis.__BUDGET_STATE__;
+  globalThis.__BUDGET_STATE__ = {
+    ...previous,
+    configured: false,
+    warning: null,
+    budget: { amount: 0, tokens: 0, currency: 'CNY', label: '未设置预算', amountLabel: null, tokenLabel: null },
+    manual: { ...previous.manual, pending: false, suppressed: false, canContinue: false, text: null },
+    guard: { disabled: false, stopped: false, canResume: false, canUnlock: false },
+    estimate: {
+      ...previous.estimate,
+      source: 'recent',
+      remainingSteps: null,
+      remainingTurns: null,
+      remainingCost: null,
+      remainingCostLabel: null,
+      remainingTokens: null,
+      projectedCost: null,
+      projectedCostLabel: null,
+      projectedTokens: null,
+      overBudget: false,
+      recentAvgCost: 0.02,
+      recentAvgCostLabel: '¥0.02',
+      recentAvgTokens: 5000,
+      recentUnit: 'turn',
+    },
+  };
+  const unset = text(renderWithFixture(registrations[1].component, { sessionId: 's' }));
+  assert.match(unset, /未设置预算/);
+  assert.doesNotMatch(unset, /继续 \(\+10%\)/, 'no manual continue control without a budget');
+  assert.doesNotMatch(unset, /预算预警/, 'no budget warning without a budget');
+
+  // The estimate surfaces must say "no budget" too: a 0% bar labelled
+  // "预算已用约 0%" after spending reads as "you used none of your budget".
+  const unsetCard = text(renderWithFixture(registrations[0].component, { sessionId: 's', seq: 10 }));
+  assert.match(unsetCard, /未设置预算 · 仅记录金额/);
+  assert.doesNotMatch(unsetCard, /预算已用约/);
+  assert.match(unsetCard, /"width":"0%"/, 'the progress bar is empty when there is no line');
+  assert.match(unsetCard, /近期消耗：约 ¥0\.02/);
+  globalThis.__BUDGET_STATE__ = previous;
+}
+
 // The settings page reads the Config route; feed it a Config-shaped fixture.
 {
   const budgetFixture = globalThis.__BUDGET_STATE__;
@@ -417,7 +460,61 @@ assert.match(text(dock), /含未知估算/);
   globalThis.__BUDGET_STATE__ = previous;
 }
 
-// ── the recovery row's 查看明细 really opens the panel ─────────────────────
+// ── 0 is a valid default budget, and the UI saves it as 0 (not a fallback) ─
+{
+  const previous = globalThis.__BUDGET_STATE__;
+  globalThis.__BUDGET_STATE__ = {
+    interceptMode: 'auto',
+    budgetAmount: 0,
+    tokenBudget: 0,
+    currency: 'CNY',
+    warnRatio: 0.8,
+    interceptRatio: 0.95,
+    unknownWarnRatio: 0.2,
+    maxGrantedPercent: 30,
+    manualHardStopRatio: 1.5,
+    enforceAtPreStep: true,
+    enableTurnEstimate: true,
+    enablePreEstimate: true,
+    estimateOutput: 'both',
+    turnEstimateMinInterval: 1500,
+    enableSnapshot: true,
+    snapshotMaxSessions: 200,
+    snapshotMaxAgeDays: 30,
+    snapshotKeepTurns: 8,
+    perSessionMaxSettled: 2000,
+    requireLocalControl: true,
+    requireLocalAction: true,
+    holidaysSource: 'default',
+    priceSources: ['内置默认'],
+    allowedOrigins: [],
+  };
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, body: init && init.body ? JSON.parse(init.body) : null });
+    return { ok: true, status: 200, json: async () => ({ ok: true, applying: true }) };
+  };
+  globalThis.__BUDGET_FIXTURE_ARMED__ = true;
+  const page = registrations[2].component({ close: () => {} });
+  const flat = flatten(page);
+  const amountInput = findElement(flat, (el) => el.type === 'input' && el.props['aria-label'] === '默认金额');
+  const tokenInput = findElement(flat, (el) => el.type === 'input' && el.props['aria-label'] === '默认 Token');
+  assert.ok(amountInput, 'the default amount input exists');
+  assert.ok(tokenInput, 'the default token input exists');
+  assert.equal(amountInput.props.value, '0', '0 renders as 0, not as a placeholder');
+  assert.equal(tokenInput.props.value, '0');
+  assert.equal(amountInput.props.min, 0, '0 is inside the input range');
+  assert.equal(tokenInput.props.min, 0);
+  buttonWithLabel(page, '保存全部设置').props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const patch = calls.at(-1).body;
+  assert.equal(patch.budgetAmount, 0, 'saving zeros keeps zeros');
+  assert.equal(patch.tokenBudget, 0);
+  globalThis.fetch = originalFetch;
+  globalThis.__BUDGET_STATE__ = previous;
+}
 {
   const previous = globalThis.__BUDGET_STATE__;
   globalThis.__BUDGET_STATE__ = {
@@ -527,6 +624,208 @@ assert.match(text(dock), /含未知估算/);
   globalThis.__BUDGET_OPEN_ARMED__ = true;
   const withSidebar = registrations[before + 1].component({ sessionId: 's' });
   assert.match(text(withSidebar), /在右侧栏打开/);
+}
+
+// ── the settings page shows the price section (its fetch is a hook) ───────
+{
+  const fixture = globalThis.__BUDGET_STATE__;
+  globalThis.__BUDGET_STATE__ = {
+    interceptMode: 'auto',
+    budgetAmount: 0,
+    tokenBudget: 0,
+    currency: 'CNY',
+    warnRatio: 0.8,
+    interceptRatio: 0.95,
+    unknownWarnRatio: 0.2,
+    maxGrantedPercent: 30,
+    manualHardStopRatio: 1.5,
+    enforceAtPreStep: true,
+    enableTurnEstimate: true,
+    enablePreEstimate: true,
+    estimateOutput: 'both',
+    turnEstimateMinInterval: 1500,
+    enableSnapshot: true,
+    snapshotMaxSessions: 200,
+    snapshotMaxAgeDays: 30,
+    snapshotKeepTurns: 8,
+    perSessionMaxSettled: 2000,
+    requireLocalControl: true,
+    requireLocalAction: true,
+    holidaysSource: 'default',
+    priceSources: ['内置默认', 'official-prices.json'],
+    allowedOrigins: [],
+  };
+  const page = text(renderWithFixture(registrations[2].component, { close: () => {} }));
+  assert.match(page, /模型价格/, 'the settings page carries a price section');
+  assert.match(page, /正在读取模型价格…/, 'the price section loads independently of Config');
+  globalThis.__BUDGET_STATE__ = fixture;
+}
+
+// ── the price table renders the merged rates and real edit boxes ──────────
+{
+  assert.equal(typeof plugin.priceTable, 'function', 'the price table is exposed for tests');
+  const priceData = {
+    currency: 'CNY',
+    unit: 'CNY / 1M tokens',
+    offpeakFactor: 0.5,
+    localPath: 'C:\\Users\\me\\.dsh\\budget-guard\\local-prices.json',
+    sources: ['内置默认', 'official-prices.json'],
+    warnings: [],
+    models: [
+      {
+        model: 'deepseek-flash',
+        origin: 'official',
+        custom: false,
+        peak: { input_miss: 2, input_hit: 0.04, output: 8 },
+        offpeak: { input_miss: 1, input_hit: 0.02, output: 4 },
+      },
+      {
+        model: 'gpt-4o-local',
+        origin: 'local',
+        custom: true,
+        peak: { input_miss: 3, input_hit: 0.3, output: 12 },
+        offpeak: { input_miss: 1.5, input_hit: 0.15, output: 6 },
+      },
+    ],
+  };
+  const noop = () => {};
+  const baseProps = {
+    data: priceData,
+    draft: {},
+    editing: null,
+    removing: [],
+    adding: false,
+    newName: '',
+    busy: null,
+    message: null,
+    onEdit: noop,
+    onCancelEdit: noop,
+    onChange: noop,
+    onToggleRemove: noop,
+    onStartAdd: noop,
+    onCancelAdd: noop,
+    onNewName: noop,
+    onSave: noop,
+  };
+
+  function collect(node, predicate, found = []) {
+    if (!node || typeof node !== 'object') return found;
+    if (Array.isArray(node)) {
+      for (const child of node) collect(child, predicate, found);
+      return found;
+    }
+    if (predicate(node)) found.push(node);
+    const children = node.props && node.props.children;
+    if (Array.isArray(children)) {
+      for (const child of children) collect(child, predicate, found);
+    } else if (children) {
+      collect(children, predicate, found);
+    }
+    return found;
+  }
+
+  const view = text(plugin.priceTable(baseProps));
+  assert.match(view, /deepseek-flash/);
+  assert.match(view, /gpt-4o-local/);
+  assert.match(view, /official/, 'an official row is labelled');
+  assert.match(view, /用户自定义/, 'a local row is labelled');
+  assert.match(view, /元 \/ 1M tokens/, 'the unit is stated');
+  assert.match(view, /local-prices\.json/, 'the save target is named');
+  assert.match(view, /保存价格/);
+  assert.match(view, /添加新模型/);
+  assert.match(view, /高峰/);
+  assert.match(view, /空闲/);
+  // Reading mode is figures, not inputs.
+  assert.equal(collect(flatten(plugin.priceTable(baseProps)), (el) => el.type === 'input').length, 0);
+  // Only the custom row offers 删除.
+  assert.equal(buttonWithLabel(plugin.priceTable(baseProps), '删除') !== null, true);
+  const nonCustomOnly = plugin.priceTable({
+    ...baseProps,
+    data: { ...priceData, models: [priceData.models[0]] },
+  });
+  assert.equal(buttonWithLabel(nonCustomOnly, '删除'), null, 'a built-in/official row cannot be deleted');
+
+  // Editing one row turns exactly its six unit prices into inputs.
+  const editing = flatten(
+    plugin.priceTable({
+      ...baseProps,
+      editing: 'deepseek-flash',
+      draft: {
+        'deepseek-flash': {
+          peak: { input_miss: '2', input_hit: '0.04', output: '9' },
+          offpeak: { input_miss: '1', input_hit: '0.02', output: '4' },
+        },
+      },
+    }),
+  );
+  const inputs = collect(editing, (el) => el.type === 'input');
+  assert.equal(inputs.length, 6, 'three prices × two tiers');
+  const labels = inputs.map((el) => el.props['aria-label']).join('|');
+  assert.match(labels, /deepseek-flash 高峰 未命中/);
+  assert.match(labels, /deepseek-flash 高峰 命中/);
+  assert.match(labels, /deepseek-flash 高峰 输出/);
+  assert.match(labels, /deepseek-flash 空闲 输出/);
+  const outputInput = inputs.find((el) => el.props['aria-label'] === 'deepseek-flash 高峰 输出');
+  assert.equal(outputInput.props.value, '9', 'the draft value is shown');
+  // onEdit is wired to the row it belongs to, and editing swaps 编辑 for 取消.
+  const seen = [];
+  const viewEdit = buttonWithLabel(plugin.priceTable({ ...baseProps, onEdit: (model) => seen.push(model) }), '编辑');
+  assert.ok(viewEdit, 'every row has 编辑');
+  viewEdit.props.onClick();
+  assert.deepEqual(seen, ['deepseek-flash'], '编辑 targets its own row');
+  const cancelButton = buttonWithLabel(plugin.priceTable({ ...baseProps, editing: 'deepseek-flash' }), '取消');
+  assert.ok(cancelButton, 'editing shows 取消');
+
+  // The add form carries a name field plus the same six price inputs.
+  const adding = flatten(plugin.priceTable({ ...baseProps, adding: true }));
+  const nameInput = collect(adding, (el) => el.type === 'input' && el.props['aria-label'] === '新模型名称')[0];
+  assert.ok(nameInput, 'a new model needs a name');
+  assert.equal(nameInput.props.value, '');
+  assert.equal(collect(adding, (el) => el.type === 'input' && el.props.type === 'number').length, 6);
+
+  // A row marked for deletion is visibly pending and can be undone.
+  const removing = text(plugin.priceTable({ ...baseProps, removing: ['gpt-4o-local'] }));
+  assert.match(removing, /待删除/);
+  assert.match(removing, /撤销/);
+
+  // The success message is exactly the promised wording.
+  const savedMessage =
+    '价格已更新并生效。注意：历史账目不会自动重算，如需按新价重算本会话，请执行 /budget reset-snapshot';
+  assert.match(text(plugin.priceTable({ ...baseProps, message: savedMessage })), /\/budget reset-snapshot/);
+  const warningData = { ...priceData, warnings: ['deepseek-flash: offpeak.output 缺失'] };
+  assert.match(text(plugin.priceTable({ ...baseProps, data: warningData })), /价格表提示 1 条/);
+}
+
+// ── the posted price payload is numbers only, blanks keep inheriting ──────
+{
+  assert.equal(typeof plugin.pricePayload, 'function');
+  const payload = plugin.pricePayload(
+    {
+      'deepseek-flash': {
+        peak: { input_miss: '2', input_hit: '0.04', output: '9' },
+        offpeak: { input_miss: '', input_hit: '', output: '' },
+      },
+      __new__: { peak: { input_miss: '1', input_hit: '0.1', output: '2' }, offpeak: {} },
+    },
+    ['gpt-4o-old'],
+    {
+      name: ' gpt-4o-new ',
+      entry: {
+        peak: { input_miss: '1', input_hit: '0.1', output: '-1' },
+        offpeak: { input_miss: '0.5', input_hit: '0.05', output: '1' },
+      },
+    },
+  );
+  assert.deepEqual(payload.models['deepseek-flash'], {
+    peak: { input_miss: 2, input_hit: 0.04, output: 9 },
+  }, 'blank fields are omitted so the lower layer keeps applying');
+  assert.ok(!('__new__' in payload.models), 'the add-form placeholder key is never sent');
+  assert.deepEqual(payload.models['gpt-4o-new'], {
+    peak: { input_miss: 1, input_hit: 0.1 },
+    offpeak: { input_miss: 0.5, input_hit: 0.05, output: 1 },
+  }, 'negative values are dropped by the client (the Host rejects them too)');
+  assert.deepEqual(payload.remove, ['gpt-4o-old']);
+  assert.deepEqual(plugin.pricePayload({}, [], null), { models: {}, remove: [] });
 }
 
 // ── P1-1/P1-2 (r6): the form covers a stated subset, nothing silently missing ─

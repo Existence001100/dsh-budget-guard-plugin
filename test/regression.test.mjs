@@ -14,6 +14,14 @@ import { join } from 'node:path';
 import { apply, name } from '../lib/index.js';
 import { priceMessage } from '../lib/pricing.js';
 
+// Model prices are read from `$DSH_HOME/budget-guard/local-prices.json`; point
+// DSH_HOME at a scratch directory so the developer's own price table cannot
+// change the amounts asserted below.
+const TEST_DSH_HOME = join(process.cwd(), 'test', '.tmp-dsh-home-regression');
+rmSync(TEST_DSH_HOME, { recursive: true, force: true });
+mkdirSync(TEST_DSH_HOME, { recursive: true });
+process.env.DSH_HOME = TEST_DSH_HOME;
+
 function makeHarness(config = {}, startSeq = 0, options = {}) {
   const events = [];
   const handlers = new Map();
@@ -323,6 +331,9 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(saved.status, 200);
   await tick();
   assert.equal(harness.configEdits.at(-1).values.budgetAmount, 0.5);
+
+  const zeros = await harness.callPost('/dsh-budget/config/save', { budgetAmount: 0, tokenBudget: 0 });
+  assert.equal(zeros.status, 200, '0 is a valid default budget');
   harness.dispose();
 }
 
@@ -554,6 +565,80 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   harness.dispose();
 }
 
+// ── 8b. /budget 0 and /budget both 0 0 are /budget off ───────────────────
+{
+  const harness = makeHarness({ budgetAmount: 0, turnEstimateMinInterval: 0 });
+  const set = await harness.command('1');
+  assert.equal(set.kind, 'success');
+  assert.equal((await harness.callGet()).body.state.budget.amount, 1);
+  const zero = await harness.command('0');
+  assert.equal(zero.kind, 'success');
+  let state = (await harness.callGet()).body.state;
+  assert.equal(state.budget.amount, 0);
+  assert.equal(state.configured, false);
+
+  const both = await harness.command('both 2 20000');
+  assert.equal(both.kind, 'success');
+  state = (await harness.callGet()).body.state;
+  assert.equal(state.budget.amount, 2);
+  assert.equal(state.budget.tokens, 20000);
+  const bothZero = await harness.command('both 0 0');
+  assert.equal(bothZero.kind, 'success');
+  state = (await harness.callGet()).body.state;
+  assert.equal(state.budget.amount, 0);
+  assert.equal(state.budget.tokens, 0);
+  assert.equal(state.configured, false);
+  harness.dispose();
+}
+
+// ── 8c. a zero amount line never disables (or duplicates) the token line ──
+{
+  const harness = makeHarness({ budgetAmount: 0, tokenBudget: 0, interceptMode: 'auto', turnEstimateMinInterval: 0 });
+  const both = await harness.command('both 0 5000');
+  assert.equal(both.kind, 'success');
+  let state = (await harness.callGet()).body.state;
+  assert.equal(state.budget.amount, 0, 'the amount line is explicitly off');
+  assert.equal(state.budget.tokens, 5000);
+  assert.equal(state.configured, true, 'the token line alone still enforces');
+
+  harness.emit('turn/start', { turn: 1 });
+  harness.emit('step/start', { turn: 1, step: 1 });
+  harness.assistant({ inputTokens: 4000, outputTokens: 0, totalTokens: 4000 }, 'under');
+  await harness.turnStopping();
+  assert.equal(harness.cancels.length, 0, '4000 < 95% of 5000 tokens');
+
+  harness.emit('step/start', { turn: 1, step: 2 });
+  harness.assistant({ inputTokens: 2000, outputTokens: 0, totalTokens: 2000 }, 'over', 'deepseek-chat', undefined, 2);
+  await harness.turnStopping();
+  assert.equal(harness.cancels.length, 1, '6000 tokens crosses the token line');
+
+  // `/budget 0` clears the whole override, so both Config zeros apply again.
+  const zero = await harness.command('0');
+  assert.equal(zero.kind, 'success');
+  state = (await harness.callGet()).body.state;
+  assert.equal(state.budget.amount, 0);
+  assert.equal(state.budget.tokens, 0);
+  assert.equal(state.configured, false);
+  assert.equal(state.warning, null);
+  harness.dispose();
+}
+
+// ── 8d. 放行/不再提示 with no budget are explicit no-ops ─────────────────
+{
+  const harness = makeHarness({ budgetAmount: 0, tokenBudget: 0, turnEstimateMinInterval: 0 });
+  const cont = await harness.command('continue');
+  assert.equal(cont.kind, 'success');
+  assert.match(cont.text, /未设置预算/);
+  const sup = await harness.command('suppress');
+  assert.equal(sup.kind, 'success');
+  assert.match(sup.text, /未设置预算/);
+  const state = (await harness.callGet()).body.state;
+  assert.equal(state.manual.continues, 0, 'no grant is invented without a line');
+  assert.equal(state.manual.suppressed, false, 'nothing is marked suppressed without a line');
+  assert.equal(state.warning, null);
+  harness.dispose();
+}
+
 // ── 9. unknownWarnRatio=0 is honored (not replaced by the 0.2 default) ────
 {
   const harness = makeHarness({ budgetAmount: 1, unknownWarnRatio: 0, turnEstimateMinInterval: 0 });
@@ -677,5 +762,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 // ── 12. component key / registered command names are the live ones ────────
 assert.equal(name, 'budget-guard');
+
+rmSync(TEST_DSH_HOME, { recursive: true, force: true });
 
 console.log('regression tests passed');
