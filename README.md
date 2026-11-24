@@ -17,6 +17,11 @@
 
 </div>
 
+<div style="border: 1px solid #e1e4e8; padding: 16px; border-radius: 6px; background-color: #ffffff;">
+  <p>⭐ <strong>如果你喜欢这个插件，请在 GitHub 上点赞它</strong>——这让我知道这个插件对你有用，也激励我继续开发它。</p>
+  <p>🐛 <strong>如果你发现了漏洞或想要请求某个功能，请打开 GitHub 问题</strong>——我会审核你的提案，并在未来插件版本中实施有用的建议。</p>
+</div>
+
 给 DSH（DeepSeek Harness）的每一次任务加一条预算线：按 **人民币金额** 或 **Token 数量** 限制消耗，接近上限时预警，达到阈值时自动中止（`auto`）或询问你“继续 / 中止”（`manual`），并在**每轮结束后**估算还需多少步、还要花多少钱。支持设置页 UI 中查看、修改或新增模型及模型单价。
 
 **🚀 快速安装**

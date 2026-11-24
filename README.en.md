@@ -17,6 +17,11 @@
 
 </div>
 
+<div style="border: 1px solid #e1e4e8; padding: 16px; border-radius: 6px; background-color: #ffffff;">
+  <p>⭐ <strong>If you like this plugin, please give it a star on GitHub</strong> — this lets me know it's useful to you and motivates me to keep developing it.</p>
+  <p>🐛 <strong>If you found a bug or want to request a feature, please open a GitHub Issue</strong> — I will review your proposal and implement useful suggestions in future versions of the plugin.</p>
+</div>
+
 Draws a budget line across every task in DSH (DeepSeek Harness): cap consumption by **CNY amount** or **token count**, warn as you approach the ceiling, and at the threshold either abort automatically (`auto`) or ask you to "continue / abort" (`manual`). After **every turn** it also estimates how many steps and how much money are left.
 
 **🚀 Quick install**
