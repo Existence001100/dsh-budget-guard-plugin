@@ -36,6 +36,32 @@ function makeHarness(config, startSeq = 0, options = {}) {
   const sessions = new Map();
   const agents = new Map();
 
+  // The durable corpus the workbench lists: `sessionQuery.listSessions()` sees
+  // every persisted Session (live or cold), titles come from the title fold,
+  // and `inspectSession` is how a cold Session's log can be folded on demand.
+  const corpus = [];
+  const persisted = new Map();
+  const titles = new Map();
+  const sessionQuery = {
+    async listSessions() {
+      return corpus.slice();
+    },
+    async readTitleSnapshots(ids) {
+      return ids.map((id) => {
+        const title = titles.get(String(id));
+        return {
+          sessionId: String(id),
+          status: 'fulfilled',
+          value: { session: { id: String(id) }, ...(title ? { title: { title } } : {}) },
+        };
+      });
+    },
+    async inspectSession(id, read) {
+      const session = persisted.get(String(id));
+      return session ? read(session) : undefined;
+    },
+  };
+
   const session = {
     id: 'session-1',
     header: {},
@@ -77,6 +103,32 @@ function makeHarness(config, startSeq = 0, options = {}) {
     };
   }
 
+  /**
+   * Register a Session that exists only on disk: no live Session object, no
+   * agent — exactly what the workbench sees for every Session except the one
+   * the user is typing in. Its events are folded only when something asks for
+   * it (`inspectSession`), which is the path under test.
+   */
+  function addPersistedSession(id, options = {}) {
+    const coldEvents = [];
+    const header = {
+      id,
+      cwd: options.cwd,
+      createdAt: options.createdAt || Date.now(),
+      ...(options.parentSession ? { parentSession: options.parentSession } : {}),
+    };
+    const cold = { id, header, snapshotEvents: () => coldEvents.slice() };
+    persisted.set(String(id), cold);
+    corpus.push({ header, live: false, persisted: true });
+    if (options.title) titles.set(String(id), options.title);
+    let coldSeq = 0;
+    return function emitCold(type, data, time = Date.now()) {
+      const event = { type, seq: ++coldSeq, time, data };
+      coldEvents.push(event);
+      return event;
+    };
+  }
+
   const ctx = {
     logger: {
       warn: (...args) => warnings.push(args.join(' ')),
@@ -93,6 +145,8 @@ function makeHarness(config, startSeq = 0, options = {}) {
       if (name === 'sessions') return ctx.sessions;
       if (name === 'agents') return ctx.agents;
       if (name === 'commands') return commandService;
+      if (name === 'sessionQuery') return sessionQuery;
+      if (name === 'workingDirectory') return { defaultDirectory: 'C:\\work' };
       if (name === 'configEditor') {
         return {
           entries: () => [configEntry],
@@ -237,6 +291,10 @@ function makeHarness(config, startSeq = 0, options = {}) {
     warnings,
     configEdits,
     addSession,
+    addPersistedSession,
+    corpus,
+    titles,
+    persisted,
     emit,
     turnStopping,
     preStep,
@@ -2708,6 +2766,200 @@ function assistant(harness, usage, text, provider = 'deepseek', model = 'deepsee
     process.env.DSH_HOME = previousHome;
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// ── the global workbench: list every Session, act on any of them ───────────
+{
+  const now = Date.now();
+  const harness = makeHarness({ budgetAmount: 2 });
+  // The Session being typed in: live, with one closed turn of real spend.
+  harness.emit('turn/start', { turn: 1 }, now);
+  assistant(harness, { inputTokens: 1000000, outputTokens: 100000 }, 'done', 'deepseek', 'deepseek-chat', now);
+  harness.emit('turn/end', { turn: 1, reason: { kind: 'completed' } }, now);
+  harness.corpus.push({
+    header: { id: 'session-1', createdAt: now - 1000, cwd: 'C:\\work' },
+    live: true,
+    persisted: true,
+  });
+  harness.titles.set('session-1', '预算护栏开发');
+  // A historical Session: no live object, no agent — only its log.
+  const emitCold = harness.addPersistedSession('session-cold', {
+    title: '历史会话',
+    createdAt: now - 9000,
+    cwd: 'C:\\work',
+  });
+  emitCold('turn/start', { turn: 1 }, now - 8000);
+  emitCold(
+    'assistant/message',
+    {
+      turn: 1,
+      step: 1,
+      message: { role: 'assistant', source: { kind: 'model', provider: 'deepseek', model: 'deepseek-chat' }, content: [] },
+      stream: [],
+      usage: { inputTokens: 100000, outputTokens: 20000 },
+    },
+    now - 8000,
+  );
+  emitCold('turn/end', { turn: 1, reason: { kind: 'completed' } }, now - 8000);
+  // A Session from another workspace that this process never folded.
+  harness.addPersistedSession('session-other', { title: '别的目录', createdAt: now - 5000, cwd: 'C:\\other' });
+
+  // A cold Session's detail must fold its log instead of answering "loading".
+  const coldState = await harness.callGet('/dsh-budget/state?sessionId=session-cold');
+  assert.equal(coldState.status, 200);
+  assert.ok(coldState.body.state, 'a historical Session is folded from its log');
+  assert.ok(coldState.body.state.used.cost > 0, 'its spend is measured, not zero');
+  assert.equal(coldState.body.state.used.tokens, 120000);
+
+  const list = await harness.callGet('/dsh-budget/workbench/sessions');
+  assert.equal(list.status, 200);
+  assert.equal(list.body.ok, true);
+  assert.equal(list.body.sessions.length, 3, 'every Session in the corpus is listed');
+  assert.equal(list.body.workspace.cwd, 'C:\\work');
+  const byId = new Map(list.body.sessions.map((row) => [row.sessionId, row]));
+  assert.equal(byId.get('session-1').title, '预算护栏开发');
+  assert.equal(byId.get('session-1').live, true);
+  assert.equal(byId.get('session-1').running, true);
+  assert.ok(byId.get('session-1').used.cost > 0);
+  assert.equal(byId.get('session-1').budget.source, 'config');
+  assert.equal(byId.get('session-1').budget.amount, 2);
+  assert.equal(byId.get('session-other').tracked, false, 'an unfolded Session is not claimed as measured');
+  assert.equal(byId.get('session-other').used.cost, 0);
+  assert.equal(byId.get('session-cold').tracked, true);
+  assert.ok(byId.get('session-cold').used.cost > 0);
+  assert.equal(list.body.total, 3);
+  // Newest activity first: the live Session just spent.
+  assert.equal(list.body.sessions[0].sessionId, 'session-1');
+
+  // Filters are the same table, sliced.
+  const workspaceOnly = await harness.callGet('/dsh-budget/workbench/sessions?cwd=C%3A%5Cwork');
+  assert.equal(workspaceOnly.body.sessions.length, 2);
+  const searched = await harness.callGet('/dsh-budget/workbench/sessions?q=' + encodeURIComponent('历史'));
+  assert.equal(searched.body.sessions.length, 1);
+  assert.equal(searched.body.sessions[0].sessionId, 'session-cold');
+
+  const stats = await harness.callGet('/dsh-budget/workbench/stats');
+  assert.equal(stats.status, 200);
+  assert.equal(stats.body.totals.sessions, 3);
+  assert.ok(stats.body.totals.cost > 0);
+  assert.equal(stats.body.totals.tracked, 2);
+  assert.ok(stats.body.today.cost > 0, "today's spend is measured");
+  assert.ok(stats.body.today.cost <= stats.body.totals.cost + 1e-9);
+  assert.equal(
+    Object.values(stats.body.statuses).reduce((sum, value) => sum + value, 0),
+    3,
+    'every row lands in exactly one status bucket',
+  );
+
+  // A cold Session: no agent, so the budget is written as an override.
+  const setCold = await harness.callPost('/dsh-budget/workbench/action', {
+    sessionId: 'session-cold',
+    action: 'set-budget',
+    amount: 1.5,
+    tokens: 5000,
+  });
+  assert.equal(setCold.status, 200);
+  const coldResult = setCold.body.results[0];
+  assert.equal(coldResult.ok, true);
+  assert.equal(coldResult.via, 'override');
+  assert.equal(coldResult.cold, true);
+  assert.match(coldResult.message, /没有活跃 Agent/);
+  assert.equal(coldResult.row.budget.amount, 1.5);
+  assert.equal(coldResult.row.budget.tokens, 5000);
+  assert.equal(coldResult.row.budget.source, 'session');
+
+  // A live Session goes through the real command so the declaration is logged.
+  const setLive = await harness.callPost('/dsh-budget/workbench/action', {
+    sessionId: 'session-1',
+    action: 'set-budget',
+    amount: 1,
+  });
+  assert.equal(setLive.status, 200);
+  assert.equal(setLive.body.results[0].via, 'command');
+  assert.equal(harness.commandExecutions.at(-1), '/budget 1');
+
+  // Clear (0/0) is the API equivalent of `/budget off`.
+  const cleared = await harness.callPost('/dsh-budget/workbench/action', {
+    sessionId: 'session-cold',
+    action: 'set-budget',
+    amount: 0,
+    tokens: 0,
+  });
+  assert.equal(cleared.body.results[0].cleared, true);
+  assert.equal(cleared.body.results[0].row.budget.amount, 2, 'back to the Config default');
+
+  // unlock / lock move the same flag the composer's recovery row moves.
+  const unlocked = await harness.callPost('/dsh-budget/workbench/action', {
+    sessionId: 'session-cold',
+    action: 'unlock',
+  });
+  assert.equal(unlocked.body.results[0].row.status, 'unlocked');
+  assert.equal(unlocked.body.results[0].row.guard.disabled, true);
+  const locked = await harness.callPost('/dsh-budget/workbench/action', {
+    sessionId: 'session-cold',
+    action: 'lock',
+  });
+  assert.equal(locked.body.results[0].row.status, 'normal');
+  assert.equal(locked.body.results[0].row.guard.disabled, false);
+
+  // reset rebuilds from the log and keeps the spend it finds there.
+  const reset = await harness.callPost('/dsh-budget/workbench/action', {
+    sessionId: 'session-cold',
+    action: 'reset',
+  });
+  assert.equal(reset.status, 200);
+  assert.equal(reset.body.results[0].ok, true);
+  assert.ok(reset.body.results[0].row.used.cost > 0, 'a reset re-prices the log, it does not zero it');
+  assert.equal(reset.body.results[0].row.budget.source, 'config', 'the override is gone, the log is truth');
+
+  // compute folds a Session that was never tracked.
+  const computed = await harness.callPost('/dsh-budget/workbench/action', {
+    sessionId: 'session-other',
+    action: 'compute',
+  });
+  assert.equal(computed.body.results[0].ok, true);
+  assert.equal(computed.body.results[0].row.tracked, true);
+
+  // Batch operations are allowed for state moves, refused for budgets.
+  const batch = await harness.callPost('/dsh-budget/workbench/action', {
+    sessionIds: ['session-cold', 'session-other'],
+    action: 'reset',
+  });
+  assert.equal(batch.body.results.length, 2);
+  assert.ok(batch.body.results.every((entry) => entry.ok));
+  const batchBudget = await harness.callPost('/dsh-budget/workbench/action', {
+    sessionIds: ['session-cold', 'session-other'],
+    action: 'set-budget',
+    amount: 1,
+  });
+  assert.equal(batchBudget.status, 400);
+  assert.equal(batchBudget.body.error, 'batch-set-budget-not-allowed');
+
+  // Unknown actions and missing ids are refused with a reason.
+  const unknownAction = await harness.callPost('/dsh-budget/workbench/action', {
+    sessionId: 'session-cold',
+    action: 'launch-rocket',
+  });
+  assert.equal(unknownAction.status, 400);
+  const noSession = await harness.callPost('/dsh-budget/workbench/action', { action: 'unlock' });
+  assert.equal(noSession.status, 400);
+  assert.equal(noSession.body.error, 'missing-session');
+
+  // Reads stay available to a remote GUI; writing another Session's budget is
+  // a local operation, exactly like editing the global default.
+  const remoteRead = await harness.callGet(
+    '/dsh-budget/workbench/sessions',
+    { host: '127.0.0.1:56675' },
+    '10.0.0.9',
+  );
+  assert.equal(remoteRead.status, 200);
+  const remoteWrite = await harness.callPost(
+    '/dsh-budget/workbench/action',
+    { sessionId: 'session-cold', action: 'unlock' },
+    { host: '127.0.0.1:56675', origin: 'http://10.0.0.9:56675' },
+    '10.0.0.9',
+  );
+  assert.equal(remoteWrite.status, 403);
 }
 
 rmSync(TEST_DSH_HOME, { recursive: true, force: true });

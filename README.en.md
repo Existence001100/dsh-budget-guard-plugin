@@ -4,7 +4,7 @@
 
 # 🏦 dsh-budget-guard-plugin
 
-**Draw a budget line across every task in DSH. Real-time accounting, auto-interception, and downgraded estimates.**
+**Add a budget line to every DSH task: support real-time accounting, automatic interception, and estimated degradation. Support viewing, modifying, or adding third-party models and model unit prices on the settings page UI and in the workbench.**
 
 <strong>English</strong> · <a href="./README.md">简体中文</a>
 
@@ -22,7 +22,8 @@
   <p>🐛 <strong>If you found a bug or want to request a feature, please open a GitHub Issue</strong> — I will review your proposal and implement useful suggestions in future versions of the plugin.</p>
 </div>
 
-Draws a budget line across every task in DSH (DeepSeek Harness): cap consumption by **CNY amount** or **token count**, warn as you approach the ceiling, and at the threshold either abort automatically (`auto`) or ask you to "continue / abort" (`manual`). After **every turn** it also estimates how many steps and how much money are left.
+Add a budget line to every DSH (DeepSeek Harness) task: limit consumption by **RMB amount** or **token count**, warn when approaching the cap, and when the threshold is reached, either automatically stop (`auto`) or ask you "continue / stop" (`manual`); after **each round ends**, estimate how many more steps are needed and how much more it will cost. Support viewing, modifying, or adding third-party models and model unit prices on the settings page UI and in the workbench.
+
 
 **🚀 Quick install**
 
@@ -34,6 +35,21 @@ Restart the Web profile after installation. Full steps (GitHub install, update/r
 
 [🚀 Quick Start](#quick-start) · [✨ Capabilities](#what-it-does) · [⚙️ Configuration](#configuration) · [🐛 Feedback](https://github.com/Existence001100/dsh-budget-guard/issues)
 
+**screenshot-during-task**
+![screenshot-during-task](assets/screenshots/screenshot-during-task.png)
+**dashboard**
+![dashboard](assets/screenshots/dashboard.png)
+**bottom-status-bar**
+![bottom-status-bar](assets/screenshots/bottom-status-bar.png)
+**set-a-budget**
+![set-a-budget](assets/screenshots/set-a-budget.png)
+**open-the-bottom-status-bar**
+![open-the-bottom-status-bar](assets/screenshots/open-the-bottom-status-bar.png)
+**config1**
+![config1](assets/screenshots/config1.png)
+**config2**
+![config2](assets/screenshots/config2.png)
+
 ## Table of contents
 
 - [What it does](#what-it-does)
@@ -41,7 +57,7 @@ Restart the Web profile after installation. Full steps (GitHub install, update/r
 - [Quick Start](#quick-start)
 - [Compatibility](#compatibility)
 - [Setting a budget](#setting-a-budget)
-  - [Model prices (bottom of the settings page)](#Model-prices-bottom-of-the-settings-page)
+  - [Model prices (bottom of the settings page and dashboard)](#Model-prices-bottom-of-the-settings-page-and-dashboard)
 - [Configuration](#configuration)
 - [Peak / off-peak pricing](#peak--off-peak-pricing)
 - [How to reconcile amounts (when it doesn't match the official bill)](#how-to-reconcile-amounts-when-it-doesnt-match-the-official-bill)
@@ -54,6 +70,7 @@ Restart the Web profile after installation. Full steps (GitHub install, update/r
 - [Read-only fields](#read-only-fields)
 - [How the per-turn estimate works (no extra tokens)](#how-the-per-turn-estimate-works-no-extra-tokens)
 - [UI](#ui)
+- [Global workbench (left navigation entry)](#global-workbench-left-navigation-entry)
 - [Interception details](#interception-details)
 - [Zero dependencies and Config projection](#zero-dependencies-and-config-projection)
 - [Build and test](#build-and-test)
@@ -73,6 +90,7 @@ Restart the Web profile after installation. Full steps (GitHub install, update/r
 | 📐 | Pre-task rough estimate | Before the first turn, shows a range of 3–12 steps with a cost/token range and share of budget (can be disabled) |
 | 📊 | Downgraded estimate | Shows only the **recent burn rate** (average consumption over the last 3 turns/steps). Remaining steps and remaining cost appear only when the model itself states a plan; **future total spend is never predicted**; no extra LLM call is made |
 | 🧭 | Output location | `estimateOutput`: `chat` (per-turn card), `sidebar` (persistent page in the right sidebar), `both` (default). The sidebar page comes from `dsh-better-sidebar`; without that bundle it falls back to the card |
+| 🗂️ | Global workbench | A "Budget" entry in the left global navigation opens a full-screen workbench: every Session's spend/budget/status, per-Session budget changes and unlocks, model prices and global thresholds. Adds three `/dsh-budget/workbench/*` routes on the Host |
 | ✅ | Config validation | Enum values, numeric ranges and unknown keys are validated at plugin load; invalid values raise `ValidationError` |
 | 🛡️ | Guardrails | `/config/save` and `/action` accept loopback requests only by default; cold-start snapshots plus replay from the session log keep the ledger recoverable and never billed twice |
 
@@ -150,6 +168,16 @@ dsh plugin --profile web add .
 
 The included `cordis.patch.yml` inserts `budget-guard` into the host composition for all sessions.
 
+If the plugin is already installed as an npm package in the profile (a real directory, not a junction), sync your build into it or the running DSH keeps executing the old code:
+
+```sh
+node build.mjs
+# overwrite the profile's copy (Windows example; adjust for your DSH_HOME)
+Copy-Item .\lib\*.js "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-budget-guard-plugin\lib\" -Force
+```
+
+Then make the plugin row reload: save the settings page once (the equivalent of `POST /dsh-budget/config/save`, which restarts that row) or restart DSH. **The browser page also needs one refresh** to load the new Client bundle — the left navigation entry and the workbench page live there.
+
 ## Compatibility
 
 | Component | Supported or continuously verified |
@@ -222,7 +250,10 @@ Ratio fields are entered as percentages (`85` means `0.85`). The footer shows th
 
 > Fixed in 0.3.10: the settings page used to divide an already-fractional `warnRatio: 0.8` by 100 (yielding `0.008`), so every "save all settings" was rejected by the Host with `warnRatio must be ... between 0.01 and 1`. It now submits `0.8 / 0.95 / 0.2` unchanged.
 
-### Model prices (bottom of the settings page)
+### Model prices (bottom of the settings page and dashboard)
+
+![config2](assets/screenshots/config2.png)
+![dashboard](assets/screenshots/dashboard.png)
 
 At the bottom of the Settings page, there is an intuitive "Model Prices" editor. You can view, add, or edit peak/off-peak prices for any model in a table view (perfect for official price changes or One API proxies). Changes apply immediately via hot-reload, no manual JSON edits required.
 
@@ -452,6 +483,7 @@ Only when the amount **and** the token budget are both 0 is there "no default bu
 ## HTTP routes
 
 - `/dsh-budget/state`, `/dsh-budget/action`, `/dsh-budget/config`, `/dsh-budget/config/save`, `/dsh-budget/prices`, `/dsh-budget/prices/save`.
+- `/dsh-budget/workbench/stats` (GET, global overview), `/dsh-budget/workbench/sessions` (GET, the session table; supports `status` / `cwd` / `q` / `limit` filters) and `/dsh-budget/workbench/action` (POST: `set-budget` / `unlock` / `lock` / `reset` / `compute`). Reads are same-origin; the write route accepts loopback only, like `/config/save` (`requireLocalControl`).
 - `set-budget` on `/action` with `amount: 0, tokens: 0` is equivalent to `/budget off`: it clears the session override and falls back to the Config default budget (no live agent needed).
 - `/config` returns **all** Config keys plus four read-only fields `output`, `holidaysSource`, `priceSources`, `server` (see "Read-only fields" below).
 - `/prices` (GET) returns the **merged and finalized** effective price book: `{ currency, unit, offpeakFactor, localPath, sources, warnings, models: [{ model, origin, custom, peak, offpeak }] }`, where `origin` is `builtin` / `official` / `local`. It is a read route, so a remote GUI can display prices too.
@@ -527,6 +559,52 @@ Estimate results are always marked as estimates; they are not a new model reques
 - **Settings page** (`settings.section` → Budget Guard): covers five core groups: interception / per-turn estimate / default budget / snapshot / access. **At the bottom, there is an intuitive "Model Prices" editor** where you can add, edit, or delete peak/off-peak prices for any model in a table view. Changes apply immediately via hot-reload. The footer shows price sources, holiday source, sidebar availability and the bind address.
 - All UI uses `--dsw-alias-*` theme variables and follows light/dark themes.
 - The budget bar aligns with the Host's `activity` / `usage` status pills: font `calc(var(--dsh-content-font-size-secondary, 13px) - 1px)`, line height `calc(20px + var(--dsh-content-font-delta-secondary, 0px))`, colour `--dsw-alias-label-tertiary`, `padding: 1px 8px`, `border-radius: var(--dsw-radius-sm)`, `gap: 6px` and `tabular-nums`, with no extra margins; the hover background uses `--dsw-alias-interactive-bg-hover`.
+- **Global workbench** (left navigation `sidebar.panellist` → a full-screen `main` panel): titled "Budget control workbench"; see the next section.
+
+## Global workbench (left navigation entry)
+
+Since 0.5.0 the plugin is no longer only "a budget line under the composer": it adds a "预算控制" (budget) row to DSH's left global navigation — the same column as Plugins, Scheduled tasks and the AGENTS & Skills workbench — and clicking it opens a full-screen budget workbench.
+
+It uses only the host's public slots; it never injects DOM or fakes a click:
+
+- **`sidebar.panellist`**: the left icon list. Registers `{ id: 'budget-workbench', order: 40, label: '预算控制' }` (after plugins 0, market 1, schedules 10, context 20, agents 30). The host draws the button and dispatches its own id to `main`.
+- **`main` (keyed)**: the full-screen panel, keyed by that same id. Both registrations must share the id — a row without its panel would be a click that lands on nothing.
+- The panel reads the Host's three workbench routes; every amount and decision is computed by the Host, the Client guesses nothing. On a host without `sidebar.panellist` the whole registration simply does not happen.
+
+### Layout
+
+- **Header**: icon, "预算控制工作台", the subtitle "全局花费监控、模型定价与会话预算管理", the update time, "刷新数据" and "全局设置".
+- **Left column**: a search box, two shortcut filters ("over budget" = at/over the line or stopped, and "no budget"), `N (/M) sessions · K accounted · today ¥X`, and three groups (global overview / current workspace / other sessions). Each row shows the title, `cost used · tokens · (live)` and a status badge (normal / warning / over budget / stopped / unlocked / no budget); the selected row gets a brand-coloured border.
+- **Right column (a Session)**: title, id, workspace path, last activity, last model and status; a budget form (amount / tokens, save, back to default, unlock / re-lock, reset cache and re-price, open the Session, refresh); below it the same cost breakdown the composer expands, just bigger.
+- **Right column (global overview)**: four cards (total spend, today's spend, sessions, unhealthy sessions), a quick global-defaults form (default amount / tokens, warn ratio, intercept ratio, mode) and the model price editor (the same table as the bottom of the settings page).
+
+### Where the data comes from
+
+- **The session list** = `ctx.sessionQuery.listSessions()` (the log corpus, historical Sessions included) + this process's in-memory state + the cold-start snapshots. Titles come from `readTitleSnapshots`; workspace grouping uses `ctx.workingDirectory.defaultDirectory`.
+- **`tracked: false`** means the Session exists in the corpus but this process has not priced its log yet — the table will not pass a `0` off as real spend. Opening it (or sending `action: 'compute'`) folds the log once through `sessionQuery.inspectSession`.
+- **Session details** use `/dsh-budget/state`, which since 0.5.0 falls back to folding the Session log (memory → live Session → snapshot → log), so a historical Session no longer sits on "loading" forever.
+- The table is newest-activity-first and capped at 400 rows (`WORKBENCH_MAX_ROWS`).
+
+### What it can change
+
+`POST /dsh-budget/workbench/action`:
+
+| action | Effect | Needs a live Agent |
+| --- | --- | --- |
+| `set-budget` | Change that Session's budget (`amount` / `tokens`; `0 / 0` equals `/budget off`, back to the Config default) | Yes → the real `/budget` command (logged, replayable); no → written to the snapshot and returned with `cold: true` |
+| `unlock` / `lock` | Lift / restore interception for that Session (spend keeps being recorded) | No |
+| `reset` | Drop that Session's billing cache and snapshot entry, then re-price the log (manual decisions survive) | No |
+| `compute` | Price the log once, turning a `tracked: false` row into a measured one | No |
+
+- Batch: `sessionIds: [...]` runs `unlock` / `lock` / `reset` / `compute` over several Sessions; `set-budget` refuses batches (400 `batch-set-budget-not-allowed`).
+- Every result carries `row`: the updated table row for that Session, so the page does not need a second fetch.
+
+### Security and limits
+
+- Reads (`/workbench/stats`, `/workbench/sessions`) are same-origin, so a remote GUI can see the whole table; the write route (`/workbench/action`) accepts loopback only, sharing `requireLocalControl` with `/config/save` — changing someone else's budget is as powerful as changing the global default.
+- **A cold Session's override lives in the snapshot**: with no `/budget` declaration in that Session's log, a replay or `reset` returns to the Config default. Run `/budget` inside that Session if you need it replayable.
+- **Today's spend** is summed from each Session's most recent 30 `turnSummaries` (only the `Asia/Shanghai` day); `today.partial: true` means some Session's summaries were truncated, so the figure is a lower bound rather than a promise.
+- The workbench is not a billing API: it reads the plugin's own derived state — the same ledger as the budget bar and the right-sidebar page.
 
 ## Interception details
 
@@ -576,6 +654,11 @@ Only Node built-in modules are used; no TypeScript, esbuild or network install i
 - Auto-opening the sidebar records "once per session" in `localStorage` (7-day expiry); when storage is unavailable (private mode) it falls back to an in-memory flag, so it still opens only once per page. Note that `localStorage` is isolated by origin: `127.0.0.1:56675` and `localhost:56675` count as two sites, so the same session may auto-open once for each (`TODO: needs confirmation` on whether other port aliases exist).
 - Invalid timestamps only increment `counters.invalidTimeMessages` (a single number) and keep no per-message record, so the snapshot does not grow because of them.
 - Subagent aggregation results are cached for 500ms and invalidated only on `assistant/message` (which really produced cost) and on `agent/created`/`agent/disposed`. Under dense messaging the hit rate stays low — a deliberate correctness-first trade-off; the aggregate query is an in-memory walk and needs no more aggressive optimisation.
+- The left navigation entry needs the host's `sidebar.panellist` and the keyed `main` (DSH 0.2.x and later). On an older host that registration never happens, and the bar/card/settings page keep working unchanged. Both registrations must share the id: `id` and `main`'s `key` are both `budget-workbench`.
+- The workbench table comes from `sessionQuery.listSessions()` + memory + snapshots, so a Session with neither a durable log nor a snapshot cannot appear; a `tracked: false` row means "exists, not priced yet" — `0` is not a measurement, and opening it folds the log once. The table is capped at 400 rows.
+- A cold Session's budget override lives only in the snapshot: with no matching `/budget` declaration in that Session's log, a replay or `reset` returns to the Config default. Run `/budget` inside that Session if you need it replayable.
+- "Today's spend" sums each Session's most recent 30 `turnSummaries` for the `Asia/Shanghai` day; `today.partial: true` means some summaries were truncated, so the figure may be low. The cumulative total is unaffected.
+- The workbench's "open Session" button uses the optional `layout` (`selectPanel(null)`) and `uiWorkspace` (`openSession`) services; if either is missing the button is inert and the rest of the page still works.
 
 ## License
 

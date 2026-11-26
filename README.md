@@ -4,7 +4,7 @@
 
 # 🏦 dsh-budget-guard-plugin
 
-**给 DSH 的每一次任务加一条预算线：支持实时核算、自动拦截、预估降级。支持在设置页 UI 中查看、修改或新增模型及模型单价。**
+**给 DSH 的每一次任务加一条预算线：支持实时核算、自动拦截、预估降级。支持在设置页 UI 和工作台中查看、修改或新增来自第三方的模型及模型单价。**
 
 <a href="./README.en.md">English</a> · <strong>简体中文</strong>
 
@@ -22,7 +22,7 @@
   <p>🐛 <strong>如果你发现了漏洞或想要请求某个功能，请打开 GitHub 问题</strong>——我会审核你的提案，并在未来插件版本中实施有用的建议。</p>
 </div>
 
-给 DSH（DeepSeek Harness）的每一次任务加一条预算线：按 **人民币金额** 或 **Token 数量** 限制消耗，接近上限时预警，达到阈值时自动中止（`auto`）或询问你“继续 / 中止”（`manual`），并在**每轮结束后**估算还需多少步、还要花多少钱。支持设置页 UI 中查看、修改或新增模型及模型单价。
+给 DSH（DeepSeek Harness）的每一次任务加一条预算线：按 **人民币金额** 或 **Token 数量** 限制消耗，接近上限时预警，达到阈值时自动中止（`auto`）或询问你“继续 / 中止”（`manual`），并在**每轮结束后**估算还需多少步、还要花多少钱。支持设置页 UI 和工作台中查看、修改或新增来自第三方的模型及模型单价。
 
 **🚀 快速安装**
 
@@ -34,6 +34,24 @@ dsh plugin --profile web add dsh-budget-guard-plugin
 
 [🚀 快速开始](#快速开始) · [✨ 核心能力](#它能做什么) · [⚙️ 配置](#配置项) · [🐛 反馈](https://github.com/Existence001100/dsh-budget-guard/issues)
 
+### 📸 界面预览 / Screenshots
+
+**任务中截图**
+![任务中截图](assets/screenshots/screenshot-during-task.png)
+**预算控制工作台**
+![预算监控面板](assets/screenshots/dashboard.png)
+**底部状态栏**
+![底部状态栏](assets/screenshots/bottom-status-bar.png)
+**设置预算**
+![设置预算](assets/screenshots/set-a-budget.png)
+**底部状态栏打开**
+![底部状态栏打开](assets/screenshots/open-the-bottom-status-bar.png)
+**插件配置界面1**
+![插件配置界面1](assets/screenshots/config1.png)
+**插件配置界面2**
+![插件配置界面2](assets/screenshots/config2.png)
+
+
 ## 目录
 
 - [它能做什么](#它能做什么)
@@ -41,7 +59,7 @@ dsh plugin --profile web add dsh-budget-guard-plugin
 - [快速开始](#快速开始)
 - [兼容性](#兼容性)
 - [设置预算](#设置预算)
-  - [模型及价格设置（设置页底部）](#模型及价格设置设置页底部)
+  - [模型及价格设置（设置页底部和工作台）](#模型及价格设置设置页底部和工作台)
 - [配置项](#配置项)
 - [高峰 / 空闲计价](#高峰--空闲计价)
 - [怎么核对金额（和官网账单对不上时）](#怎么核对金额和官网账单对不上时)
@@ -54,6 +72,7 @@ dsh plugin --profile web add dsh-budget-guard-plugin
 - [只读字段](#只读字段)
 - [每轮预估怎么算（不花额外 Token）](#每轮预估怎么算不花额外-token)
 - [界面](#界面)
+- [全局工作台（左侧导航入口）](#全局工作台左侧导航入口)
 - [拦截行为细节](#拦截行为细节)
 - [零依赖与 Config 投影](#零依赖与-config-投影)
 - [构建与测试](#构建与测试)
@@ -73,6 +92,7 @@ dsh plugin --profile web add dsh-budget-guard-plugin
 | 📐 | 任务前粗估 | 首轮开始前给出 3–12 步、金额/Token 范围与预算占比（可关） |
 | 📊 | 降级预估 | 只展示**近期历史燃烧率**（最近 3 轮/步的平均消耗）；只有模型明确写出计划时才显示剩余步数与剩余金额，**不预测未来总花费**；不新增 LLM 调用 |
 | 🧭 | 输出位置 | `estimateOutput`: `chat`（每轮卡片）、`sidebar`（右侧栏常驻页）、`both`（默认）。右侧栏页由 `dsh-better-sidebar` 提供；没有该 bundle 时自动退回卡片 |
+| 🗂️ | 全局工作台 | 左侧全局导航新增「预算控制」入口，打开全屏工作台：全部会话的花费/预算/状态总览、逐会话改预算与解除限制、模型价格与全局阈值。Host 侧新增 3 条 `/dsh-budget/workbench/*` 路由 |
 | ✅ | 配置校验 | 插件加载时校验枚举、数值范围、未知键；无效值直接报 `ValidationError` |
 | 🛡️ | 安全护栏 | `/config/save` 与 `/action` 默认只接受本机 loopback 请求；冷启动快照 + 从会话日志重放，保证账目可恢复、不被重复计费 |
 
@@ -150,6 +170,16 @@ dsh plugin --profile web add .
 
 插件自带的 `cordis.patch.yml` 会把 `budget-guard` 插入宿主 composition，对所有会话生效。
 
+如果插件已经以 npm 包的方式装进了 profile（目录不是 junction），改完源码后要把它同步过去，否则运行中的 DSH 仍在跑旧代码：
+
+```sh
+node build.mjs
+# 把构建产物覆盖到 profile 的插件目录（Windows 示例；路径按你的 DSH_HOME 调整）
+Copy-Item .\lib\*.js "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-budget-guard-plugin\lib\" -Force
+```
+
+然后让插件行重新加载：改一次设置页并「保存全部设置」（等价于 `POST /dsh-budget/config/save`，宿主会重启这一行），或直接重启 DSH。**浏览器页面还需要刷新一次**才会加载新的 Client bundle（左侧导航入口与工作台页面都在里面）。
+
 ## 兼容性
 
 | 组件 | 支持或持续验证范围 |
@@ -222,7 +252,10 @@ dsh plugin --profile web add .
 
 > 0.3.10 修复：设置页曾把已经是比例的 `warnRatio: 0.8` 再除以 100 变成 `0.008`，导致「保存全部设置」每次都被 Host 以 `warnRatio must be ... between 0.01 and 1` 拒绝。现在提交的仍是 `0.8 / 0.95 / 0.2`。
 
-### 模型及价格设置（设置页底部）
+### 模型及价格设置（设置页底部和工作台）
+
+![插件配置界面2](assets/screenshots/config2.png)
+![预算监控面板](assets/screenshots/dashboard.png)
 
 在设置页的最下方，提供了一个直观的「模型价格」编辑器。你可以直接在 UI 中以表格形式查看、新增或修改各个模型的高峰/空闲单价（完美适配官方调价或 One API 等三方代理）。修改保存后会立即热更新生效，无需手动去改 JSON 文件。
 
@@ -452,6 +485,7 @@ dsh plugin --profile web add .
 ## HTTP 路由
 
 - `/dsh-budget/state`、`/dsh-budget/action`、`/dsh-budget/config`、`/dsh-budget/config/save`、`/dsh-budget/prices`、`/dsh-budget/prices/save`。
+- `/dsh-budget/workbench/stats`（GET，全局概览）、`/dsh-budget/workbench/sessions`（GET，会话表格，支持 `status` / `cwd` / `q` / `limit` 过滤）、`/dsh-budget/workbench/action`（POST，`set-budget` / `unlock` / `lock` / `reset` / `compute`）。读路由同源放行；写路由与 `/config/save` 一样默认只接受 loopback（`requireLocalControl`）。
 - `/action` 的 `set-budget` 传 `amount: 0, tokens: 0` 等价于 `/budget off`：清除会话覆盖、回到 Config 默认预算（不需要 live agent）。
 - `/config` 返回**全部** Config 键，外加四个只读字段 `output`、`holidaysSource`、`priceSources`、`server`（见下节「只读字段」）。
 - `/config/save` 的键白名单直接来自 `DEFAULTS`：新增 Config 键自动可保存；未知键 400 `unknown-key`，越界/枚举错误/跨字段冲突统一 400 `invalid`，`issues` 是 `[{ path: ['字段'], message: '原因' }]` 数组，设置页会把 `path` + `message` 直接显示出来。
@@ -525,8 +559,54 @@ dsh plugin --profile web add .
   - 历史均值可能低估或高估，但它不再被用来预测未来；预警仍会通过预算条变色与卡片提示。
 - **常驻预算条**（`conversation.composer.dock`）：与 Host 自己的 usage 行同高同字号。主行只显示 `未设置预算 · 已用 ¥37.07` 或 `预算 ¥2.00 · 已用 ¥1.15`；**有 `shadowCost` 时追加 `（判定 ¥1.50，含未知估算）`**，即真实值与拦截判定同时可见。冷启动快照显示 `≈…（待校正）`，未定价模型追加 `· 价格未知`，手动模式关闭提示后显示 `· 已关闭提示`。点击展开明细：分项费用、峰/谷费用、最近模型、当前时段、Token、未知模型、未知估算（仅用于拦截判断）、父任务/子代理聚合、结算健康度（`有 N 次结算被拒绝` / `M 条已结算 · lastSeq`）、价格来源，并可展开「设置本次预算」输入框。达到阈值时文字变色并出现 `⚠`；`manual` 模式提供「继续 (+10%)」「不再提示」「中止」。
 - **设置页**（`settings.section` → 预算护栏）：涵盖拦截 / 每轮预估 / 默认预算 / 快照 / 访问五组核心设置。**底部还提供了直观的「模型价格」编辑器**，你可以直接在这里以表格形式增删改各个模型的高峰/空闲单价，保存后立即热更新生效。页脚显示价格来源、节假日来源、右侧栏可用性与绑定地址。
+- **全局工作台**（左侧导航 `sidebar.panellist` → 全屏 `main` 面板）：标题「预算控制工作台」，见下一节。
 - 所有 UI 使用 `--dsw-alias-*` 主题变量，跟随明暗主题。
 - 预算条与 Host 的 `activity` / `usage` 状态 pill 对齐：字体 `calc(var(--dsh-content-font-size-secondary, 13px) - 1px)`、行高 `calc(20px + var(--dsh-content-font-delta-secondary, 0px))`、颜色 `--dsw-alias-label-tertiary`、`padding: 1px 8px`、`border-radius: var(--dsw-radius-sm)`、`gap: 6px` 与 `tabular-nums`，不额外添加外边距；hover 背景使用 `--dsw-alias-interactive-bg-hover`。
+
+## 全局工作台（左侧导航入口）
+
+0.5.0 起，插件不再只是「会话底部的一条预算线」：它在 DSH 左侧全局导航（与「插件」「自动化任务」「AGENTS & Skills 工作台」同一列）增加一个「预算控制」入口，点开是一个全屏的预算管理工作台。
+
+它只用宿主公开的 Slot，不注入 DOM、不伪造点击：
+
+- **`sidebar.panellist`**：左侧图标列表，注册 `{ id: 'budget-workbench', order: 40, label: '预算控制' }`（在插件 0、市场 1、定时任务 10、上下文 20、AGENTS 30 之后）。宿主自己画按钮，并把自己那个 id 转发给 `main`。
+- **`main`（keyed）**：全屏面板，键必须与上面的 id 相同（`budget-workbench`）。两条注册同名同 id 是硬约束——只注册行不注册面板，点下去就什么都没有。
+- 面板组件只读取 Host 的三条工作台路由，金额与判定都由 Host 计算，Client 不猜任何数字。宿主没有 `sidebar.panellist` 时（更老的 DSH）整块注册不发生，不会留下坏入口。
+
+### 布局
+
+- **顶部**：图标 + 「预算控制工作台」+ 副标题「全局花费监控、模型定价与会话预算管理」、更新时刻、「刷新数据」「全局设置」。
+- **左栏（会话列表）**：「筛选会话…」搜索框，两个快捷筛选（「只看超预算」= 超阈值/已拦截，「未设置预算」），`共 N（/M）个会话 · 已核算 K · 今日 ¥X`；列表分「全局概览 / 当前工作区 / 其他会话」三组。每行显示标题、`已用金额 · Token ·（活跃）`、状态徽标（正常 / 预警 / 超预算 / 已拦截 / 已解除限制 / 未设置预算），选中的行用品牌色描边。
+- **右栏（选中会话）**：标题、ID、工作区路径、最后活动时间、最近模型与状态；「会话预算」表单（金额 / Token、保存预算、回到默认、解除限制 / 恢复拦截、清除缓存重算、打开会话、刷新）；下方是预算条展开后的同一份费用明细，只是做大。
+- **右栏（全局概览）**：四张卡片（累计花费、今日花费、会话数、异常会话）；「全局默认与阈值」快捷表单（默认金额、默认 Token、预警比例、拦截阈值、拦截模式）；模型价格编辑器（与设置页底部同一张表）。
+
+### 数据从哪来
+
+- **会话列表** = `ctx.sessionQuery.listSessions()`（日志语料，含历史会话）+ 本进程内存状态 + 冷启动快照。标题取 `readTitleSnapshots`，工作区分组用 `ctx.workingDirectory.defaultDirectory`。
+- **`tracked: false`** 表示该会话在日志语料里存在、但这个进程还没按日志核算过——列表不会拿 `0` 冒充花费。点开它（或发 `action: 'compute'`）会通过 `sessionQuery.inspectSession` 折叠一次日志，之后就是真实数字。
+- **会话详情**走 `/dsh-budget/state`；0.5.0 起它在内存与快照都没有时会**从会话日志折叠**（`memory → 活跃会话 → 快照 → 日志`），所以历史会话的明细不再永远停在「加载中」。
+- 列表按最后活动时间倒序，上限 400 行（`WORKBENCH_MAX_ROWS`）。
+
+### 能改什么
+
+`POST /dsh-budget/workbench/action`：
+
+| action | 作用 | 需要活跃 Agent |
+| --- | --- | --- |
+| `set-budget` | 改该会话的预算（`amount` / `tokens`；`0 / 0` 等于 `/budget off`，回到 Config 默认） | 有则走真实 `/budget` 命令（写进日志、可重放）；没有则写入快照并返回 `cold: true` |
+| `unlock` / `lock` | 解除 / 恢复该会话的拦截（费用照常统计） | 不需要 |
+| `reset` | 丢弃该会话的计费缓存与快照条目，按日志重算（保留「继续/不再提示」这类手动决定） | 不需要 |
+| `compute` | 只按日志核算一次，把一个 `tracked: false` 的行变成真实数字 | 不需要 |
+
+- 批量：用 `sessionIds: [...]` 可一次对多个会话做 `unlock` / `lock` / `reset` / `compute`；`set-budget` 拒绝批量（400 `batch-set-budget-not-allowed`），因为「一个金额给所有会话」在 3 步小任务上是浪费、在大重构上是杯水车薪。
+- 每条结果都带 `row`：该会话更新后的表格行，页面不必再拉一次。
+
+### 安全与边界
+
+- 读路由（`/workbench/stats`、`/workbench/sessions`）同源放行，远程 GUI 也能看全表；写路由（`/workbench/action`）默认只接受 **loopback**，与 `/config/save` 共用 `requireLocalControl`——改别人的预算和改全局默认一样有力量。
+- **冷会话的覆盖写在快照里**：如果该会话日志里没有对应的 `/budget` 声明，重放/重算会回到 Config 默认值。想要可重放，就在那个会话里执行一次 `/budget`。
+- **今日花费**由每个会话最近 30 轮的 `turnSummaries` 汇总（只算 `Asia/Shanghai` 当天）；`today.partial: true` 表示有会话的轮次摘要已被截断，这个数字是下界而不是承诺。
+- 工作台不是计费接口：它读的是插件自己的派生状态，和预算条、右侧栏页是同一份账。
 
 ## 拦截行为细节
 
@@ -574,6 +654,11 @@ node test/bom.test.mjs  # 全仓库 BOM 检查，含 lib/（运行时真正加�
 - 自动打开右侧栏用 `localStorage` 记“每会话一次”（7 天过期）；隐私模式下 storage 不可用时退回内存标记，同一页面内仍只开一次。注意 `localStorage` 按 origin 隔离：`127.0.0.1:56675` 与 `localhost:56675` 会被当成两个站点，同一个会话可能各自动打开一次（`TODO: 需确认` 是否还有其他端口别名）。
 - 非法时间戳只累加 `counters.invalidTimeMessages`（一个数字），不会为每条非法消息保留记录，因此快照不会因此增长。
 - 子代理聚合结果有 500ms 缓存，只在 `assistant/message`（真的产生了费用）与 `agent/created`/`agent/disposed` 时失效。高密度消息下缓存命中率仍然很低——这是正确性优先的取舍，聚合查询本身是内存遍历，不需要更激进的优化。
+- 左侧导航入口依赖宿主声明的 `sidebar.panellist` 与按 key 分发的 `main`（DSH 0.2.x 起；更老的宿主没有这两个 Slot，此时整块注册自动不发生，预算条/卡片/设置页照常工作）。两条注册必须同名：`id` 与 `main` 的 `key` 都是 `budget-workbench`。
+- 工作台列表来自 `sessionQuery.listSessions()` + 内存 + 快照，因此**没有持久日志、也没有快照的会话不会出现**；`tracked: false` 的行是「存在但未核算」，`0` 不代表没花钱，点开会按日志折叠一次。列表上限 400 行。
+- 冷会话（没有活跃 Agent）的预算覆盖只写进快照：该会话日志里没有对应 `/budget` 声明时，重放或 `reset` 会回到 Config 默认值。要可重放，请在该会话里执行一次 `/budget`。
+- 「今日花费」是每会话最近 30 轮 `turnSummaries` 的汇总（`Asia/Shanghai` 当天），`today.partial: true` 表示有会话的摘要被截断，该数字可能偏低；累计花费不受此影响。
+- 工作台「打开会话」依赖宿主可选的 `layout`（`selectPanel(null)` 回到对话）与 `uiWorkspace`（`openSession`）服务；两者任一缺失时按钮只是不生效，页面其余部分照常。
 
 ## License
 

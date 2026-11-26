@@ -68,11 +68,50 @@ const ctx = {
 };
 
 plugin.apply(ctx);
-assert.deepEqual(injections, ['conversation.chat.turnTail', 'conversation.composer.dock', 'settings.section']);
-assert.equal(registrations.length, 3);
+assert.deepEqual(injections, [
+  'conversation.chat.turnTail',
+  'conversation.composer.dock',
+  'settings.section',
+  'sidebar.panellist',
+]);
+assert.equal(registrations.length, 5);
 assert.equal(registrations[0].options.id, 'budget-turn-estimate');
 assert.equal(registrations[1].options.id, 'budget-status');
 assert.equal(registrations[2].options.id, 'budget-guard');
+
+// ── the global workbench: one id, two registrations ───────────────────────
+//
+// `sidebar.panellist` paints the left-column row and dispatches `main` with the
+// row's own id, so the two registrations must agree on it. Registering the row
+// without the panel (or the other way round) would produce a click that lands
+// on nothing.
+{
+  const mainPanel = registrations.find((entry) => entry.options.name === 'main');
+  const sidebarRow = registrations.find((entry) => entry.options.name === 'sidebar.panellist');
+  assert.ok(mainPanel, 'the workbench registers a central panel');
+  assert.ok(sidebarRow, 'the workbench registers a sidebar row');
+  assert.equal(plugin.workbenchPanelId, 'budget-workbench');
+  assert.equal(mainPanel.options.key, plugin.workbenchPanelId, 'main is keyed by the sidebar id');
+  assert.equal(sidebarRow.options.id, mainPanel.options.key, 'sidebar id == main key');
+  assert.equal(sidebarRow.options.order, 40, 'after the host rows (0-30) and the market (1)');
+  assert.equal(sidebarRow.options.label(), '预算控制');
+  assert.equal(mainPanel.options.label(), '预算控制工作台');
+  assert.equal(typeof mainPanel.component, 'function');
+  assert.equal(typeof sidebarRow.component, 'function');
+  // The sidebar icon is sized by the host and painted with currentColor.
+  const icon = sidebarRow.component({ size: 24, active: true });
+  assert.equal(icon.type, 'svg');
+  assert.equal(icon.props.width, 24);
+  assert.equal(icon.props.height, 24);
+  assert.match(JSON.stringify(icon), /currentColor/);
+  assert.equal(sidebarRow.component({}).props.width, 16, 'falls back to 16px like the host rows');
+  // A Host without the workbench routes (or before the data arrives) renders a
+  // readable page instead of throwing.
+  const empty = mainPanel.component({});
+  assert.equal(empty.type, 'div');
+  assert.match(text(empty), /预算控制工作台/);
+  assert.match(text(empty), /正在读取工作台数据/);
+}
 
 // All components must be renderable functions; with no fetched state they
 // return null rather than throwing.
@@ -554,7 +593,10 @@ assert.match(text(dock), /含未知估算/);
   const ctx2 = {
     slots: ctx.slots,
     inject(names, callback) {
-      assert.deepEqual(names, ['betterSidebar']);
+      assert.ok(Array.isArray(names) && names.length === 1, 'one optional service per inject');
+      // `layout` / `uiWorkspace` only power the workbench's "打开会话" button;
+      // this fixture deliberately lacks them, which must stay harmless.
+      if (names[0] !== 'betterSidebar') return () => {};
       callback({
         betterSidebar: {
           registerTab(descriptor) {
@@ -573,7 +615,7 @@ assert.match(text(dock), /含未知估算/);
     },
   };
   plugin.apply(ctx2);
-  assert.equal(registrations.length, before + 3, 'slots are registered once more');
+  assert.equal(registrations.length, before + 5, 'slots are registered once more, workbench included');
   assert.equal(tabs.length, 1);
   const tab = tabs[0];
   assert.equal(tab.id, 'budget-guard:estimate');
@@ -838,6 +880,103 @@ assert.match(text(dock), /含未知估算/);
   assert.ok(covered.every((key) => defaults.includes(key)), 'every form key is a real Config key');
   assert.ok(!covered.includes('holidays') && !covered.includes('allowedOrigins'), 'array/path keys stay in YAML');
   assert.ok(covered.includes('requireLocalControl') && covered.includes('requireLocalAction'));
+}
+
+// ── the workbench page renders the global view from one Host payload ──────
+{
+  const mainPanel = registrations.find((entry) => entry.options.name === 'main');
+  const row = (id, title, patch) => ({
+    sessionId: id,
+    title,
+    cwd: 'C:\\work\\项目六',
+    createdAt: 1,
+    parentSessionId: null,
+    live: true,
+    running: false,
+    tracked: true,
+    stale: false,
+    model: 'deepseek-chat',
+    tier: 'peak',
+    status: 'normal',
+    statusLabel: '正常',
+    percent: 20,
+    turns: 3,
+    steps: 9,
+    overBudget: false,
+    lastActivity: 2,
+    used: {
+      cost: 0.4,
+      costLabel: '¥0.40',
+      shadowCost: 0,
+      effectiveCost: 0.4,
+      effectiveCostLabel: '¥0.40',
+      tokens: 20000,
+      tokenLabel: '20.0k tokens',
+      percent: 20,
+    },
+    budget: {
+      amount: 2,
+      tokens: 0,
+      currency: 'CNY',
+      label: '¥2.00',
+      source: 'config',
+      overrideAmount: null,
+      overrideTokens: null,
+    },
+    guard: { disabled: false, disabledAt: 0, stopped: false, stopKind: null, lastStopAt: 0, manualPending: false },
+    ...patch,
+  });
+  const payload = {
+    ok: true,
+    generatedAt: Date.parse('2026-11-25T10:00:00+08:00'),
+    currency: 'CNY',
+    workspace: { cwd: 'C:\\work\\项目六' },
+    totals: {
+      cost: 3.25,
+      costLabel: '¥3.25',
+      tokens: 120000,
+      tokenLabel: '120k tokens',
+      shadowCost: 0,
+      sessions: 2,
+      tracked: 2,
+      live: 2,
+      running: 1,
+    },
+    today: { cost: 1.1, costLabel: '¥1.10', tokens: 40000, tokenLabel: '40.0k tokens', partial: false },
+    statuses: { normal: 1, warning: 0, over: 1, stopped: 0, unlocked: 0, unconfigured: 0 },
+    anomalies: { over: 1, stopped: 0, unlocked: 0, unconfigured: 0 },
+    sessions: [
+      row('session-aaaaaaaa', '重构预算护栏', { status: 'over', statusLabel: '超预算', percent: 118 }),
+      row('session-bbbbbbbb', '写周报', { used: { cost: 0.2, costLabel: '¥0.20', shadowCost: 0, effectiveCost: 0.2, effectiveCostLabel: '¥0.20', tokens: 8000, tokenLabel: '8.0k tokens', percent: 10 } }),
+    ],
+    total: 2,
+    shown: 2,
+    priceSources: ['内置默认'],
+  };
+  const previous = globalThis.__BUDGET_STATE__;
+  globalThis.__BUDGET_STATE__ = payload;
+  globalThis.__BUDGET_FIXTURE_ARMED__ = true;
+  const page = mainPanel.component({});
+  const rendered = text(page);
+  assert.match(rendered, /预算控制工作台/);
+  assert.match(rendered, /全局花费监控、模型定价与会话预算管理/);
+  assert.match(rendered, /刷新数据/);
+  assert.match(rendered, /累计花费/);
+  assert.match(rendered, /¥3\.25/);
+  assert.match(rendered, /今日花费/);
+  assert.match(rendered, /¥1\.10/);
+  assert.match(rendered, /共 2 个会话/);
+  assert.match(rendered, /重构预算护栏/, 'every session row is listed');
+  assert.match(rendered, /超预算/, 'the over-budget row carries its badge');
+  assert.match(rendered, /当前工作区/, 'rows are grouped by workspace');
+  assert.match(rendered, /只看超预算/, 'the over-budget filter chip is offered');
+  assert.match(rendered, /未设置预算/, 'the "no budget" filter chip is offered');
+  assert.match(rendered, /模型价格/, 'the global view hosts the price editor');
+  // Neither Host read has answered yet in this fixture: both sections say so
+  // instead of rendering a form with no values.
+  assert.match(rendered, /正在读取全局配置/);
+  assert.match(rendered, /正在读取模型价格/);
+  globalThis.__BUDGET_STATE__ = previous;
 }
 
 console.log('client tests passed');

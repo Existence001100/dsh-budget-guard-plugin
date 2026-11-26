@@ -1,0 +1,32 @@
+{
+  "screenshots": [
+    {
+      "src": "assets/screenshots/dashboard.png",
+      "alt": "预算监控面板"
+    },
+    {
+      "src": "assets/screenshots/config1.png",
+      "alt": "插件配置界面1"
+    },
+    {
+      "src": "assets/screenshots/config2.png",
+      "alt": "插件配置界面2"
+    },
+    {
+      "src": "assets/screenshots/bottom-status-bar.png",
+      "alt": "底部状态栏"
+    },
+    {
+      "src": "assets/screenshots/open-the-bottom-status-bar.png",
+      "alt": "打开底部状态栏"
+    },
+    {
+      "src": "assets/screenshots/set-a-budget.png",
+      "alt": "设置预算"
+    },
+    {
+      "src": "assets/screenshots/screenshot-during-task.png",
+      "alt": "任务中截图"
+    }
+  ]
+}
