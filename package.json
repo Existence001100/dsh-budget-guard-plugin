@@ -1,6 +1,6 @@
 {
   "name": "dsh-budget-guard-plugin",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Per-task CNY/token budget guard for DeepSeek Harness: paces, warns, cancels or asks, and shows recent burn after every turn; remaining steps are reported only when the model states a plan.",
   "type": "module",
   "main": "lib/index.js",
@@ -24,7 +24,7 @@
   },
   "engines": {
     "node": ">=22.13",
-    "dsh": ">=0.2.0"
+    "dsh": ">=0.2.2-rc.3"
   },
   "dsh": {
     "bundle": {

@@ -113,7 +113,7 @@ Each `assistant/message` is priced one by one using its own `event.time` and the
 
 ### Requirements
 
-- DeepSeek Harness `0.2.x` or later;
+- DeepSeek Harness `0.2.2-rc.3` or later (the release that introduced the route admission API; `engines.dsh` declares the same range);
 - Node.js `>=22.13`;
 - pnpm available on `PATH` for `dsh plugin`.
 
@@ -182,10 +182,12 @@ Then make the plugin row reload: save the settings page once (the equivalent of 
 
 | Component | Supported or continuously verified |
 | --- | --- |
-| DeepSeek Harness | `0.2.0` or later. We continuously track DSH host API changes. |
+| DeepSeek Harness | `0.2.2-rc.3` or later (the same range `package.json` declares in `engines.dsh`). That floor is not arbitrary: the plugin joins DSH's own route admission layer through `ctx.connection.admit`, which arrives in `0.2.2-rc.3`; `0.2.3+` satisfies it too. Older hosts are refused by DSH itself at install/profile start instead of failing on the first budget request. |
 | Node.js | `^22.13.0` and `>=24.0.0` |
 | pnpm | Latest version, used with `dsh plugin` |
 | Operating systems | Windows / macOS / Linux |
+
+> **Since 0.5.1 the plugin depends on DSH's route admission contract.** Earlier versions registered routes through `webServer.register` without the host's admission check, leaving them exposed to DNS rebinding and unauthenticated requests. Every route now calls `ctx.connection.admit(request)` before any business logic (falling back to the superseded `requestRejection` on older hosts): an untrusted Host/Origin answers `403`, a trusted but unauthenticated request answers `401`, and a fence that throws refuses rather than admits. The plugin's own `sameOrigin` rules stay behind that layer and now answer only "is this write local-only?".
 
 This plugin is built on official DSH extension points (`agent/turn-stopping`, `agent/pre-step`, etc.) without modifying the core model logic. If you find an interface incompatibility in a specific DSH version, please open an [issue](https://github.com/Existence001100/dsh-budget-guard/issues).
 
@@ -489,6 +491,7 @@ Only when the amount **and** the token budget are both 0 is there "no default bu
 - `/prices` (GET) returns the **merged and finalized** effective price book: `{ currency, unit, offpeakFactor, localPath, sources, warnings, models: [{ model, origin, custom, peak, offpeak }] }`, where `origin` is `builtin` / `official` / `local`. It is a read route, so a remote GUI can display prices too.
 - `/prices/save` (POST) accepts `{ models: { model: { peak?, offpeak? } }, remove?: [model] }`, merges only the fields it was given into `$DSH_HOME/budget-guard/local-prices.json` (write-then-rename, no BOM) and then reloads and re-runs `finalizePriceBook` in memory; it returns `{ ok, applied, written, removed, localPath, prices }`. Invalid input is a 400 `invalid` with `issues` (paths like `['models', 'gpt-4o', 'peak', 'output']`); a write failure is a 500 `write-failed`. **Loopback only** (shares `requireLocalControl` with `/config/save`).
 - The key allowlist for `/config/save` comes straight from `DEFAULTS`: new Config keys are savable automatically; unknown keys are a 400 `unknown-key`, and out-of-range / enum errors / cross-field conflicts are a uniform 400 `invalid` whose `issues` array is `[{ path: ['field'], message: 'reason' }]`, which the settings page displays directly as `path` + `message`.
+- **Admission (0.5.1)**: every route calls DSH's own admission layer before any business logic — `ctx.connection.admit({ headers })`, which decides whether the Host/Origin is this listener (a failure answers `403`) and whether the browser/API credential is valid (trusted but unauthenticated answers `401`); on a host without `admit` it falls back to the superseded `requestRejection`. A refusal always answers `{ ok: false, error: 'admission', status }`, and the plugin no longer decides by itself who is trustworthy. A fence that throws **refuses** (fail closed) instead of admitting everyone. This layer answers "is this an authenticated host browser", while `requireLocalControl` below answers "is this write local-only" — both remain, independently.
 - **Credential model (0.3.0)**: `Origin` and `Sec-Fetch-Site` are ordinary request headers that a script can forge freely, so they are **not** credentials. What actually counts is the TCP peer address. Reads and writes are split:
   - `/config/save` (changing the global budget) accepts **loopback peers** only by default (`requireLocalControl`, default `true`);
   - `/action` (continue / don't ask again / abort / set budget for this task) also accepts loopback only by default (`requireLocalAction`, default `true`), but it can be **turned off separately**: it only affects the current session and is less risky than changing the global budget;
@@ -500,7 +503,12 @@ Only when the amount **and** the token budget are both 0 is there "no default bu
 - **Reverse proxy**: if the GUI is reached through a reverse proxy (`Origin`/`Host` differ from what DSH actually binds), the same-origin check fails. Either keep the proxy same-origin (rewrite `Host` and forward to `127.0.0.1`), or add the proxied origin to `allowedOrigins`. Note that `allowedOrigins` only allows cross-origin requests and does **not** bypass the loopback requirements of `/config/save` and `/action` — in a reverse-proxy setup, adjust `requireLocalControl` / `requireLocalAction` as needed.
 - Measured on the current deployment (the `server` field vs. `getOrigin()`): it listens on `127.0.0.1`, so non-loopback clients cannot connect; if it is later changed to `0.0.0.0`, the plugin warns in the log and automatically enables exact-Origin rules.
 
-### Debugging a local save that returns 403
+### Debugging a local save that returns 403 (or 401)
+
+First work out which layer refused — both can:
+
+- **401 + `{"error":"admission"}`**: DSH's own admission layer (since 0.5.1). The request's `Host`/`Origin` is trusted, but there is **no authenticated browser session**. Typical cause: `curl` or a script calling the route without the browser's signed cookie. Use the GUI's settings page, or log in once through the URL `dsh web` printed with `?token=...` to obtain the cookie.
+- **403 + `{"error":"origin"}`**: the plugin's own same-origin/loopback rules, below.
 
 Rules for `/config/save` and `/action` (since 0.3.9, with the Host fallback completed in 0.3.10):
 
@@ -508,7 +516,7 @@ Rules for `/config/save` and `/action` (since 0.3.9, with the Host fallback comp
 2. **`Host` must point at this listener** (`127.0.0.1:port` / `localhost:port`, or a proxy host configured in `allowedOrigins`) — this is the key defence against DNS rebinding, so `evil.com` resolving to 127.0.0.1 still does not get through;
 3. When the two conditions above hold, **`Origin` is no longer required**. Early versions demanded `Origin` or `Sec-Fetch-Site`, but the desktop shell and some same-origin fetches send neither header, so local saves were wrongly rejected — a real bug fixed in 0.3.9. Since 0.3.10, even if `webServer.getOrigin()` is unavailable (`server.checked: false`), a loopback peer with a localhost/127.0.0.1/[::1] `Host` is let through, with no dependency on bind metadata.
 
-When a request is rejected, `server.lastReject` in `GET /dsh-budget/config` reports `{ remote, forwardedFor, host, origin, secFetchSite, reason, at }`:
+When a request is rejected, `/dsh-budget/config` reports both layers: `server.lastReject` (the plugin's own rules) and `server.lastAdmission` (DSH's admission layer, `{ status, at, path, host }`). The `lastReject` fields are `{ remote, forwardedFor, host, origin, secFetchSite, reason, at }`:
 
 | reason | Meaning / what to do |
 | --- | --- |
@@ -528,7 +536,7 @@ Escape hatch when the proxy cannot be changed: turn off `requireLocalControl` in
 | `output` | The enabled flags derived from `enableTurnEstimate` + `estimateOutput`: `{ mode, chat, sidebar }` |
 | `holidaysSource` | `config` / `default` / `none` — where the holiday table actually comes from |
 | `priceSources` | The loaded price sources in order, e.g. `["built-in defaults", "official-prices.json"]` |
-| `server` | `{ origin, host, loopback, checked }` — the bind address the webServer actually advertises |
+| `server` | `{ origin, host, loopback, checked, lastReject, lastAdmission }` — the bind address the webServer actually advertises. `lastReject` is the last refusal by the plugin's own same-origin/loopback rules; `lastAdmission` is the last refusal by DSH's admission layer (`{ status, at, path, host }`). Both live in memory and reset on restart |
 
 ## How the per-turn estimate works (no extra tokens)
 
@@ -655,6 +663,7 @@ Only Node built-in modules are used; no TypeScript, esbuild or network install i
 - Invalid timestamps only increment `counters.invalidTimeMessages` (a single number) and keep no per-message record, so the snapshot does not grow because of them.
 - Subagent aggregation results are cached for 500ms and invalidated only on `assistant/message` (which really produced cost) and on `agent/created`/`agent/disposed`. Under dense messaging the hit rate stays low — a deliberate correctness-first trade-off; the aggregate query is an in-memory walk and needs no more aggressive optimisation.
 - The left navigation entry needs the host's `sidebar.panellist` and the keyed `main` (DSH 0.2.x and later). On an older host that registration never happens, and the bar/card/settings page keep working unchanged. Both registrations must share the id: `id` and `main`'s `key` are both `budget-workbench`.
+- **Local scripts can no longer read the routes directly (behaviour change in 0.5.1)**: every `/dsh-budget/*` route goes through DSH's admission layer, so a `curl`/script without the browser-session cookie receives `401 {"error":"admission"}`. That is the same contract DSH's own `/api` enforces, not a bug; log in once through the `?token=...` URL to obtain a cookie, or use the GUI. `engines.dsh` also raises the floor to `0.2.2-rc.3` (where `admit` arrived); older hosts are refused by DSH at install/profile start.
 - The workbench table comes from `sessionQuery.listSessions()` + memory + snapshots, so a Session with neither a durable log nor a snapshot cannot appear; a `tracked: false` row means "exists, not priced yet" — `0` is not a measurement, and opening it folds the log once. The table is capped at 400 rows.
 - A cold Session's budget override lives only in the snapshot: with no matching `/budget` declaration in that Session's log, a replay or `reset` returns to the Config default. Run `/budget` inside that Session if you need it replayable.
 - "Today's spend" sums each Session's most recent 30 `turnSummaries` for the `Asia/Shanghai` day; `today.partial: true` means some summaries were truncated, so the figure may be low. The cumulative total is unaffected.

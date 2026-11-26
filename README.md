@@ -115,7 +115,7 @@ flowchart LR
 
 ### 环境要求
 
-- DeepSeek Harness `0.2.x` 或更高版本；
+- DeepSeek Harness `0.2.2-rc.3` 或更高版本（路由准入 API 的引入版本；`engines.dsh` 声明同一范围）；
 - Node.js `>=22.13`；
 - `PATH` 中存在 pnpm，供 `dsh plugin` 调用。
 
@@ -184,10 +184,12 @@ Copy-Item .\lib\*.js "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-bu
 
 | 组件 | 支持或持续验证范围 |
 | --- | --- |
-| DeepSeek Harness | `0.2.0` 及以上版本。持续跟进 DSH 宿主 API 变更。 |
+| DeepSeek Harness | `0.2.2-rc.3` 及以上（`package.json` 的 `engines.dsh` 声明了同一范围）。这个下限不是随手写的：插件通过 `ctx.connection.admit` 接入 DSH 自己的路由准入层，该方法自 `0.2.2-rc.3` 起提供，`0.2.3+` 同样满足。更老的宿主会被 DSH 在安装/启动时直接拒绝，而不是等到第一次预算请求才报错。 |
 | Node.js | `^22.13.0` 与 `>=24.0.0` |
 | pnpm | 最新版，配合 `dsh plugin` 使用 |
 | 操作系统 | Windows / macOS / Linux |
+
+> **0.5.1 起：依赖 DSH 的路由准入规范。** 此前的版本用 `webServer.register` 注册路由却不走宿主统一的准入检查，等于把自己暴露在 DNS rebinding / 未认证请求之下。现在每条路由在进入业务逻辑前先调用 `ctx.connection.admit(request)`（老宿主回退到已被取代的 `requestRejection`），Host/Origin 不可信返回 `403`、可信但未认证返回 `401`，准入调用自身抛错时**拒绝**而不是放行。插件自己的 `sameOrigin` 规则保留在准入层之后，只负责“这个写操作是否仅限本机”。
 
 本插件基于 DSH 官方扩展点（`agent/turn-stopping`、`agent/pre-step` 等）开发，不侵入模型核心逻辑。如果在使用中发现特定版本的 DSH 存在接口不兼容，请提交 [Issue](https://github.com/Existence001100/dsh-budget-guard/issues)。
 
@@ -491,6 +493,7 @@ Copy-Item .\lib\*.js "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-bu
 - `/config/save` 的键白名单直接来自 `DEFAULTS`：新增 Config 键自动可保存；未知键 400 `unknown-key`，越界/枚举错误/跨字段冲突统一 400 `invalid`，`issues` 是 `[{ path: ['字段'], message: '原因' }]` 数组，设置页会把 `path` + `message` 直接显示出来。
 - `/prices`（GET）返回**已合并 + finalize 后**的生效价格：`{ currency, unit, offpeakFactor, localPath, sources, warnings, models: [{ model, origin, custom, peak, offpeak }] }`，`origin` 为 `builtin` / `official` / `local`。读路由同源放行，远程 GUI 也能看到价格。
 - `/prices/save`（POST）接收 `{ models: { 模型名: { peak?, offpeak? } }, remove?: [模型名] }`，只把写出的字段合并进 `$DSH_HOME/budget-guard/local-prices.json`（写临时文件后 rename，不带 BOM），随后在内存里重新加载并 `finalizePriceBook`；返回 `{ ok, applied, written, removed, localPath, prices }`。校验失败返回 400 `invalid` + `issues`（路径形如 `['models', 'gpt-4o', 'peak', 'output']`），写盘失败返回 500 `write-failed`。**只允许 loopback**（与 `/config/save` 共用 `requireLocalControl`）。
+- **准入检查（0.5.1）**：所有路由在进入业务逻辑前先走 DSH 自己的准入层——`ctx.connection.admit({ headers })`，它判断 Host/Origin 是否为本监听器（失败 `403`）以及浏览器/API 凭证是否有效（可信但未认证 `401`）；宿主没有 `admit` 时回退到已废弃的 `requestRejection`。拒绝响应的 body 固定为 `{ ok: false, error: 'admission', status }`，插件不再自行判断“谁可信”。准入调用抛错时**拒绝**（fail closed），绝不退回“谁都能进”。这一层回答“是不是一个已认证的宿主浏览器”，下面的 `requireLocalControl` 回答“这个写操作是否只允许本机”——两者独立，都保留。
 - **凭证机制（0.3.0）**：`Origin` 和 `Sec-Fetch-Site` 都是普通请求头，脚本可以随意伪造，所以它们**不是**凭证。真正起作用的是 TCP 对端地址。读与写分开：
   - `/config/save`（改全局预算）默认只接受 **loopback 对端**（`requireLocalControl`，默认 `true`）；
   - `/action`（继续 / 不再提示 / 中止 / 设置本次预算）默认同样只接受 loopback（`requireLocalAction`，默认 `true`），但它可以**单独关闭**：它只影响当前会话，风险低于改全局预算；
@@ -502,15 +505,20 @@ Copy-Item .\lib\*.js "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-bu
 - **反向代理**：如果 GUI 通过反向代理访问（`Origin`/`Host` 与 DSH 实际绑定的不同），同源判定会失败。要么让代理保持同源（改写 `Host` 并转发为 `127.0.0.1`），要么把代理后的 origin 写进 `allowedOrigins`。注意 `allowedOrigins` 只是跨源放行，**不会**绕过 `/config/save`、`/action` 的 loopback 要求——反代场景请配合 `requireLocalControl` / `requireLocalAction` 按需调整。
 - 当前部署实测（`server` 字段与 `getOrigin()`）：监听在 `127.0.0.1`，非 loopback 客户端无法连上；如果将来改成 `0.0.0.0`，插件会在日志里 warn 并自动启用精确 Origin 规则。
 
-### 本地保存被 403 拦住时怎么查
+### 本地保存被 403（或 401）拦住时怎么查
 
-`/config/save` 与 `/action` 的规则（0.3.9 起，0.3.10 补齐 Host 回退）：
+先分清是哪一层拒绝的——两层都可能拦你：
+
+- **401 + `{"error":"admission"}`**：来自 DSH 自己的准入层（0.5.1 起）。请求的 `Host`/`Origin` 是可信的，但**没有已认证的浏览器会话**。典型场景：用 `curl` / 脚本直接访问，没有浏览器那枚签名 Cookie。解决办法是用 GUI 里的设置页操作，或在 `dsh web` 打印的带 `?token=...` 的地址上先完成一次登录换取 Cookie。
+- **403 + `{"error":"origin"}`**：来自插件自己的同源/回环规则，见下面的表。
+
+再按 `/config/save` 与 `/action` 的规则排查（0.3.9 起，0.3.10 补齐 Host 回退）：
 
 1. **对端必须是本机**（loopback）——除非你把 `requireLocalControl` / `requireLocalAction` 关掉；
 2. **`Host` 必须指向这个监听器**（`127.0.0.1:端口` / `localhost:端口`，或 `allowedOrigins` 里配置的代理主机）——这是防 DNS rebinding 的关键，`evil.com` 解析到 127.0.0.1 也过不了；
 3. 满足上面两条时**不再要求 `Origin`**。早期版本强制要求 `Origin` 或 `Sec-Fetch-Site`，而桌面壳/部分同源 fetch 两个头都不发，于是本机保存被误杀——这是 0.3.9 修掉的真实问题。0.3.10 起，即使 `webServer.getOrigin()` 不可用（`server.checked: false`），只要对端是 loopback 且 `Host` 是 localhost/127.0.0.1/[::1] 也放行，不再依赖 bind 元数据。
 
-被拒时，`GET /dsh-budget/config` 的 `server.lastReject` 会给出 `{ remote, forwardedFor, host, origin, secFetchSite, reason, at }`：
+被拒时，`GET /dsh-budget/config` 的 `server.lastReject`（插件规则）与 `server.lastAdmission`（DSH 准入层，`{ status, at, path, host }`）会各自给出最近一次记录。`lastReject` 的字段是 `{ remote, forwardedFor, host, origin, secFetchSite, reason, at }`：
 
 | reason | 含义 / 处理 |
 | --- | --- |
@@ -530,7 +538,7 @@ Copy-Item .\lib\*.js "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-bu
 | `output` | 由 `enableTurnEstimate` + `estimateOutput` 推导的允许位：`{ mode, chat, sidebar }` |
 | `holidaysSource` | `config` / `default` / `none`，节假日表实际来自哪里 |
 | `priceSources` | 已加载的价格来源顺序，如 `["内置默认", "official-prices.json"]` |
-| `server` | `{ origin, host, loopback, checked }`，webServer 实际公告的绑定地址 |
+| `server` | `{ origin, host, loopback, checked, lastReject, lastAdmission }`，webServer 实际公告的绑定地址。`lastReject` 是插件自己的同源/回环规则最近一次拒绝，`lastAdmission` 是 DSH 准入层最近一次拒绝（`{ status, at, path, host }`）——两者都在进程内，重启清空 |
 
 ## 每轮预估怎么算（不花额外 Token）
 
@@ -655,6 +663,7 @@ node test/bom.test.mjs  # 全仓库 BOM 检查，含 lib/（运行时真正加�
 - 非法时间戳只累加 `counters.invalidTimeMessages`（一个数字），不会为每条非法消息保留记录，因此快照不会因此增长。
 - 子代理聚合结果有 500ms 缓存，只在 `assistant/message`（真的产生了费用）与 `agent/created`/`agent/disposed` 时失效。高密度消息下缓存命中率仍然很低——这是正确性优先的取舍，聚合查询本身是内存遍历，不需要更激进的优化。
 - 左侧导航入口依赖宿主声明的 `sidebar.panellist` 与按 key 分发的 `main`（DSH 0.2.x 起；更老的宿主没有这两个 Slot，此时整块注册自动不发生，预算条/卡片/设置页照常工作）。两条注册必须同名：`id` 与 `main` 的 `key` 都是 `budget-workbench`。
+- **本机脚本不再能直接读接口（0.5.1 起，行为变化）**：所有 `/dsh-budget/*` 路由都过 DSH 的准入层，因此没有浏览器会话 Cookie 的 `curl` / 脚本会收到 `401 {"error":"admission"}`。这是与 DSH 自己的 `/api` 一致的契约，不是 bug；需要脚本访问时请先在带 `?token=` 的地址登录换取 Cookie，或用 GUI 操作。`engines.dsh` 同时把下限提到 `0.2.2-rc.3`（`admit` 的引入版本），更老的宿主会被 DSH 在安装/启动时拒绝。
 - 工作台列表来自 `sessionQuery.listSessions()` + 内存 + 快照，因此**没有持久日志、也没有快照的会话不会出现**；`tracked: false` 的行是「存在但未核算」，`0` 不代表没花钱，点开会按日志折叠一次。列表上限 400 行。
 - 冷会话（没有活跃 Agent）的预算覆盖只写进快照：该会话日志里没有对应 `/budget` 声明时，重放或 `reset` 会回到 Config 默认值。要可重放，请在该会话里执行一次 `/budget`。
 - 「今日花费」是每会话最近 30 轮 `turnSummaries` 的汇总（`Asia/Shanghai` 当天），`today.partial: true` 表示有会话的摘要被截断，该数字可能偏低；累计花费不受此影响。

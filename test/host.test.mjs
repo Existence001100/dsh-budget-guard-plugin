@@ -146,6 +146,8 @@ function makeHarness(config, startSeq = 0, options = {}) {
       if (name === 'agents') return ctx.agents;
       if (name === 'commands') return commandService;
       if (name === 'sessionQuery') return sessionQuery;
+      if (name === 'connection') return options.connection;
+      if (name === 'connection.authentication') return options.connectionAuthentication;
       if (name === 'workingDirectory') return { defaultDirectory: 'C:\\work' };
       if (name === 'configEditor') {
         return {
@@ -164,31 +166,63 @@ function makeHarness(config, startSeq = 0, options = {}) {
       return () => {};
     },
     inject(names, callback) {
-      const child = {
-        ...ctx,
-        webServer: {
-          register(route) {
-            routes.set(route.path, route);
-            return () => routes.delete(route.path);
+      const list = Array.isArray(names) ? names : [names];
+      if (list.includes('webServer')) {
+        const child = {
+          ...ctx,
+          webServer: {
+            register(route) {
+              // Simulate a path the previous fiber still holds: `register`
+              // throws on duplicates, which must not take the rest with it.
+              if (Array.isArray(options.failPaths) && options.failPaths.includes(route.path)) {
+                throw new Error(`duplicate route ${route.path}`);
+              }
+              routes.set(route.path, route);
+              return () => routes.delete(route.path);
+            },
+            getOrigin() {
+              return bindOrigin;
+            },
           },
-          getOrigin() {
-            return bindOrigin;
+          commands: {
+            register(definition) {
+              commands.push(definition);
+              return () => {};
+            },
           },
-        },
-        commands: {
-          register(definition) {
-            commands.push(definition);
-            return () => {};
+          effect(callback) {
+            const dispose = callback();
+            return () => {
+              if (typeof dispose === 'function') dispose();
+            };
           },
-        },
-        effect(callback) {
-          const dispose = callback();
-          return () => {
-            if (typeof dispose === 'function') dispose();
-          };
-        },
-      };
-      callback(child);
+        };
+        callback(child);
+        return () => {};
+      }
+      if (list.includes('connection')) {
+        // Cordis optional injection: a host that never provides the service
+        // leaves the scope cold. `connection.authentication` exists only on
+        // hosts that resolve `admit`'s verifier through that nested registry —
+        // the case where reading Connection from an undeclared context throws.
+        if (!options.connection) return () => {};
+        if (list.includes('connection.authentication') && !options.connectionAuthentication) return () => {};
+        const admissionScope = {
+          ...ctx,
+          connection: options.connection,
+          get(name) {
+            if (name === 'connection') return options.connection;
+            if (name === 'connection.authentication') return options.connectionAuthentication;
+            return ctx.get(name);
+          },
+        };
+        callback(admissionScope);
+        return () => {};
+      }
+      // Any other optional dependency (`commands`) is always provided: this
+      // harness only models services the plugin asks for individually.
+      callback({ ...ctx, commands: commandService });
+      return () => {};
     },
     effect(callback) {
       callback();
@@ -243,7 +277,11 @@ function makeHarness(config, startSeq = 0, options = {}) {
     };
     return route
       .handler({ method: 'GET', url, headers, socket: { remoteAddress } }, response)
-      .then(() => ({ status: response.status, body: JSON.parse(response.body) }));
+      .then(() => ({
+        status: response.status,
+        // A 405 answers with headers only; every route that returns a body is JSON.
+        body: response.body ? JSON.parse(response.body) : null,
+      }));
   }
 
   function callPost(
@@ -275,7 +313,11 @@ function makeHarness(config, startSeq = 0, options = {}) {
         if (event === 'end') listener();
       },
     };
-    return route.handler(request, response).then(() => ({ status: response.status, body: JSON.parse(response.body) }));
+    return route.handler(request, response).then(() => ({
+      status: response.status,
+      // A 405 answers with headers only; every route that returns a body is JSON.
+      body: response.body ? JSON.parse(response.body) : null,
+    }));
   }
 
   return {
@@ -2960,6 +3002,216 @@ function assistant(harness, usage, text, provider = 'deepseek', model = 'deepsee
     '10.0.0.9',
   );
   assert.equal(remoteWrite.status, 403);
+}
+
+// ── DSH admission: the Host's fence runs before this plugin's own rules ─────
+{
+  const seen = [];
+  const admitting = (answer) => ({
+    admit(request) {
+      seen.push(request.headers && request.headers.host);
+      return typeof answer === 'function' ? answer(request) : answer;
+    },
+  });
+
+  // Admitted by the Host: the request reaches the plugin's handler and the
+  // fence saw the real request headers.
+  {
+    const harness = makeHarness({ budgetAmount: 2 }, 0, {
+      connection: admitting({ peer: { id: 'owner' } }),
+    });
+    const response = await harness.callGet('/dsh-budget/state?sessionId=session-1');
+    assert.equal(response.status, 200);
+    assert.equal(response.body.ok, true);
+    assert.equal(seen.length, 1, 'admission runs exactly once per request');
+    assert.equal(seen[0], '127.0.0.1:56675', 'the fence is given the request headers');
+  }
+
+  // Refused by the fence (trusted authority, no browser credential): 401, and
+  // nothing leaves the plugin — no budget data in the body.
+  {
+    const harness = makeHarness({}, 0, { connection: admitting({ rejection: 401 }) });
+    const response = await harness.callGet('/dsh-budget/state?sessionId=session-1');
+    assert.equal(response.status, 401);
+    assert.equal(response.body.ok, false);
+    assert.equal(response.body.error, 'admission');
+    assert.equal(response.body.status, 401);
+    assert.equal(response.body.state, undefined, 'a refusal returns no state');
+  }
+
+  // Host/Origin refused: 403 — same shape, and every route family is fenced,
+  // not just the read the browser happens to call first.
+  {
+    const harness = makeHarness({}, 0, { connection: admitting({ rejection: 403 }) });
+    for (const url of [
+      '/dsh-budget/state?sessionId=session-1',
+      '/dsh-budget/config',
+      '/dsh-budget/prices',
+      '/dsh-budget/workbench/stats',
+      '/dsh-budget/workbench/sessions',
+    ]) {
+      const response = await harness.callGet(url);
+      assert.equal(response.status, 403, `${url} is fenced`);
+      assert.equal(response.body.error, 'admission', `${url} says why`);
+    }
+    const write = await harness.callPost('/dsh-budget/config/save', { budgetAmount: 1 });
+    assert.equal(write.status, 403);
+    const action = await harness.callPost('/dsh-budget/action', { sessionId: 'session-1', action: 'unlock' });
+    assert.equal(action.status, 403);
+    const workbench = await harness.callPost('/dsh-budget/workbench/action', {
+      sessionId: 'session-1',
+      action: 'unlock',
+    });
+    assert.equal(workbench.status, 403);
+    assert.equal(harness.configEdits.length, 0, 'a fenced write never reaches the config editor');
+  }
+
+  // Admission answers before the method table, so an unauthenticated caller
+  // learns nothing about which verbs a route supports; an admitted caller with
+  // the wrong verb still gets the honest 405.
+  {
+    const refused = makeHarness({}, 0, { connection: admitting({ rejection: 401 }) });
+    const wrongMethod = await refused.callPost('/dsh-budget/config', {});
+    assert.equal(wrongMethod.status, 401, 'admission precedes the method check');
+    const admitted = makeHarness({}, 0, { connection: admitting({ peer: { id: 'owner' } }) });
+    const honest = await admitted.callPost('/dsh-budget/config', {});
+    assert.equal(honest.status, 405);
+  }
+
+  // A path a disposing fiber still holds must not cost the routes declared
+  // after it. `webServer.register` throws on a duplicate, and before the retry
+  // wrapper that throw aborted the whole effect: the plugin came back with five
+  // routes and no way to read or save its own settings.
+  {
+    const harness = makeHarness({}, 0, { failPaths: ['/dsh-budget/prices'] });
+    assert.equal(harness.routes.has('/dsh-budget/prices'), false, 'the blocked path is the only casualty');
+    for (const path of ['/dsh-budget/state', '/dsh-budget/action', '/dsh-budget/config/save', '/dsh-budget/workbench/sessions']) {
+      assert.ok(harness.routes.has(path), `${path} still mounts`);
+    }
+    const config = await harness.callGet('/dsh-budget/config');
+    assert.equal(config.status, 200, 'the settings route survives a collision before it');
+  }
+
+  // A fence that throws must refuse, never admit: the whole point of applying
+  // DSH's own admission is that the plugin cannot decide to bypass it.
+  {
+    const harness = makeHarness({}, 0, {
+      connection: {
+        admit() {
+          throw new Error('cannot get property "connection.authentication" without inject');
+        },
+      },
+    });
+    const response = await harness.callGet('/dsh-budget/config');
+    assert.equal(response.status, 403);
+    assert.equal(response.body.error, 'admission');
+    assert.ok(
+      harness.warnings.some((line) => line.includes('connection.admit failed')),
+      'the throw is reported instead of being swallowed',
+    );
+  }
+
+  // Deprecated hosts: `admit` is missing and `requestRejection` answers the
+  // status itself (`undefined` means admitted).
+  {
+    const legacyAdmit = makeHarness({}, 0, {
+      connection: { requestRejection: () => undefined },
+    });
+    assert.equal((await legacyAdmit.callGet('/dsh-budget/config')).status, 200);
+    const legacyRefuse = makeHarness({}, 0, {
+      connection: { requestRejection: () => 401 },
+    });
+    const refused = await legacyRefuse.callGet('/dsh-budget/config');
+    assert.equal(refused.status, 401);
+    assert.equal(refused.body.error, 'admission');
+  }
+
+  // `admit` throwing on a host that still wraps it: the deprecated wrapper is
+  // tried before failing closed.
+  {
+    const harness = makeHarness({}, 0, {
+      connection: {
+        admit() {
+          throw new Error('no inject');
+        },
+        requestRejection: () => undefined,
+      },
+    });
+    assert.equal((await harness.callGet('/dsh-budget/config')).status, 200);
+  }
+
+  // Hosts without the Connection service (pre-admission) keep working through
+  // the plugin's own Host/Origin rules — that path is what every other test in
+  // this file already exercises.
+  {
+    const harness = makeHarness({}, 0, {});
+    const response = await harness.callGet('/dsh-budget/config');
+    assert.equal(response.status, 200);
+    assert.equal(response.body.config.server.lastAdmission, null);
+  }
+
+  // A host that resolves `admit` through `connection.authentication` gets the
+  // declared scope; the same service is then used for the call.
+  {
+    let sawHeaders = false;
+    const harness = makeHarness({}, 0, {
+      connectionAuthentication: { kind: 'registry' },
+      connection: {
+        admit(request) {
+          sawHeaders = request.headers.host === '127.0.0.1:56675';
+          return { peer: { id: 'owner' } };
+        },
+      },
+    });
+    const response = await harness.callGet('/dsh-budget/config');
+    assert.equal(response.status, 200);
+    assert.equal(sawHeaders, true);
+  }
+
+  // Admission is not a replacement for the plugin's write gate: a fence-passing
+  // request from a remote peer still cannot change the global budget.
+  {
+    const harness = makeHarness({}, 0, { connection: admitting({ peer: { id: 'owner' } }) });
+    const response = await harness.callPost(
+      '/dsh-budget/config/save',
+      { budgetAmount: 1 },
+      { host: '127.0.0.1:56675', origin: 'http://127.0.0.1:56675' },
+      '10.0.0.9',
+    );
+    assert.equal(response.status, 403);
+    assert.equal(response.body.error, 'origin', 'the loopback rule still applies');
+    assert.equal(harness.configEdits.length, 0);
+  }
+
+  // A refusal is diagnosable afterwards: `/config` → `server.lastAdmission`.
+  {
+    let refusePost = true;
+    const harness = makeHarness({}, 0, {
+      connection: {
+        admit: () => (refusePost ? { rejection: 403 } : { peer: { id: 'owner' } }),
+      },
+    });
+    const refused = await harness.callPost('/dsh-budget/config/save', { budgetAmount: 1 });
+    assert.equal(refused.status, 403);
+    refusePost = false;
+    const config = await harness.callGet('/dsh-budget/config');
+    assert.equal(config.status, 200);
+    assert.equal(config.body.config.server.lastAdmission.status, 403);
+    assert.match(config.body.config.server.lastAdmission.path, /config\/save/);
+    assert.ok(config.body.config.server.lastAdmission.at > 0);
+  }
+}
+
+// ── the manifest declares the DSH floor the admission API needs ────────────
+{
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(typeof manifest.engines, 'object');
+  assert.equal(manifest.engines.node, '>=22.13');
+  // `ctx.connection.admit` is the current admission call; it arrived in
+  // 0.2.2-rc.3, so that is the oldest host this plugin may claim. Older hosts
+  // are refused by DSH itself at install/profile start instead of failing at
+  // the first budget request.
+  assert.equal(manifest.engines.dsh, '>=0.2.2-rc.3');
 }
 
 rmSync(TEST_DSH_HOME, { recursive: true, force: true });
